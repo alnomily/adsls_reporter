@@ -1,0 +1,10 @@
+# ignore .venv file
+.venv/
+supabase_export_20260203_023016/
+supabase_export_20260203_023338/
+supabase_export_20260203_023524/
+.tests/
+.tools/
+.export_all_functions.py
+.env
+.reports/
