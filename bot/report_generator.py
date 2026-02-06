@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 from PIL import Image, ImageDraw, ImageFont
 
-# إعداد الاتصال مع Supabase
+# إعداد الاتصال مع قاعدة البيانات المحلية (PostgreSQL)
 from bot.utils_shared import run_blocking, sync_get_users_ordered, sync_get_account_available_balance
 
 
@@ -35,12 +35,12 @@ class ReportGenerator:
         raise NotImplementedError("Will be implemented in next part")
     def get_users_data(self) -> List[AccountRecord]:
         """
-        Fetch users with their latest available balance from Supabase
+        Fetch users with their latest available balance from the local database
         """
         try:
-            # sync_get_users_ordered is a synchronous helper that returns the supabase response
+            # sync_get_users_ordered is a synchronous helper that returns a DBResponse
             users_resp = sync_get_users_ordered()
-            # run_blocking returns the supabase response object
+            # run_blocking returns a DBResponse-like object
 
             account_records: List[AccountRecord] = []
 

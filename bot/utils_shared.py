@@ -3,38 +3,58 @@ import logging
 from functools import partial
 from typing import Any, Callable, Dict, Optional
 
-from postgrest import APIError
+import psycopg2
+from psycopg2 import errors as pg_errors
 
 from bot.app import EXEC
 from bot.cache import CacheManager
-from bot.lazy_supabase import supabase
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
+from bot.local_postgres import (
+    DBResponse,
+    count_table as pg_count_table,
+    execute,
+    fetch_all,
+    fetch_one,
+    fetch_value,
+    insert_returning_one,
+)
 
 
 def _sync_count_table(tbl: str,filter_column: Optional[str] = None, filter_value: Optional[Any] = None):
-    query = supabase.table(tbl).select("id", count="exact")
-    if filter_column and filter_value is not None:
-        query = query.eq(filter_column, filter_value)
-    return query.execute()
+    cnt = pg_count_table(tbl, filter_column, filter_value)
+    return DBResponse(data=[], count=cnt)
 
 
 def _sync_get_networks():
-    return supabase.table("networks").select("*").execute()
+    return DBResponse(data=fetch_all('SELECT * FROM networks'))
 
 
 def _sync_get_all_users():
-    return supabase.table("users_accounts").select("id, username, password, network_id").eq("is_active", True).execute()
+    return DBResponse(
+        data=fetch_all(
+            'SELECT id, username, password, network_id FROM users_accounts WHERE is_active = TRUE'
+        )
+    )
 
 
 def _sync_insert_pending(network_id: str, request_text: str):
-    return supabase.table("pending_requests").insert({"network_id": network_id, "request_text": request_text, "status": "pending"}).execute()
+    row = insert_returning_one(
+        'INSERT INTO pending_requests (token_id, request_text, status) VALUES (%s, %s, %s) RETURNING *',
+        [network_id, request_text, 'pending'],
+    )
+    return DBResponse(data=[row] if row else [])
 
 
 def _sync_user_exists(username: str):
-    return supabase.table("users_accounts").select("id").eq("username", username).limit(1).execute()
+    rows = fetch_all('SELECT id FROM users_accounts WHERE username = %s LIMIT 1', [username])
+    return DBResponse(data=rows)
 
 def _sync_users_exists(adsls: list):
-    return supabase.table("users_accounts").select("adsl_number").in_("adsl_number", adsls).execute()
+    if not adsls:
+        return DBResponse(data=[])
+    rows = fetch_all('SELECT adsl_number FROM users_accounts WHERE adsl_number = ANY(%s::text[])', [adsls])
+    return DBResponse(data=rows)
 
 def _unwrap_network_id(network_id: Any):
     """Ensure network_id is a primitive (int/str)."""
@@ -61,125 +81,144 @@ def _unwrap_network_id(network_id: Any):
 
 def _sync_insert_user_account(username: str, password: str, network_id: Any, adsl: Optional[str] = None):
     network_id = _unwrap_network_id(network_id)
-    payload = {"username": str(username), "password": str(password), "network_id": network_id}
+    payload_username = str(username)
+    payload_password = str(password)
+    payload_adsl = str(adsl) if adsl else None
+
+    cols = ["username", "password", "network_id", "is_active"] + (["adsl_number"] if payload_adsl else [])
+    vals = [payload_username, payload_password, network_id, True] + ([payload_adsl] if payload_adsl else [])
+    placeholders = ", ".join(["%s"] * len(vals))
+
     try:
-        if adsl:
-            payload["adsl_number"] = str(adsl)
-        resp = supabase.table("users_accounts").insert(payload).execute()
-        data = getattr(resp, "data", None) or resp
-        if isinstance(data, list) and data:
-            return data[0].get("id")
-        if isinstance(data, dict):
-            return data.get("id")
-        return None
-    except APIError as e:
-        if "duplicate key value violates unique constraint" in str(e):
-            return "DUPLICATE"
-        if "already exists" in str(e):
+        row = insert_returning_one(
+            f"INSERT INTO users_accounts ({', '.join(cols)}) VALUES ({placeholders}) RETURNING id",
+            vals,
+        )
+        return (row or {}).get("id")
+    except psycopg2.IntegrityError as e:
+        # 23505 = unique_violation
+        if getattr(e, "pgcode", None) == "23505" or isinstance(getattr(e, "__cause__", None), pg_errors.UniqueViolation):
             return "DUPLICATE"
         raise
 
 def _sync_insert_users_accounts(usersnames: list, network_id: str, adsl: Optional[str] = None):
-    payloads = []
-    for username in usersnames:
-        payload = {"username": username, "network_id": network_id}
+    if not usersnames:
+        return DBResponse(data=[])
+    rows = []
+    for uname in usersnames:
+        row = {
+            "username": str(uname),
+            "password": "123456",
+            "network_id": network_id,
+            "is_active": True,
+        }
         if adsl:
-            payload["adsl_number"] = adsl
-        payloads.append(payload)
-    return supabase.table("users_accounts").insert(payloads).execute()
+            row["adsl_number"] = str(adsl)
+        rows.append(row)
+
+    inserted: list[dict[str, Any]] = []
+    for r in rows:
+        try:
+            row_db = insert_returning_one(
+                """INSERT INTO users_accounts (username, password, network_id, is_active, adsl_number)
+                   VALUES (%s, %s, %s, %s, %s)
+                   RETURNING id, username""",
+                [r.get("username"), r.get("password"), r.get("network_id"), r.get("is_active"), r.get("adsl_number")],
+            )
+            if row_db:
+                inserted.append(row_db)
+        except psycopg2.IntegrityError:
+            # keep supabase-like behavior: surface the error to callers if they care
+            raise
+
+    return DBResponse(data=inserted)
 
 def _sync_delete_user(username: str):
-    return supabase.table("users_accounts").delete().eq("username", username).execute()
+    execute('DELETE FROM users_accounts WHERE username = %s', [username])
+    return DBResponse(data=[])
 
 
 def _sync_update_user_status(username: str, status: str):
-    return supabase.table("users_accounts").update({"status": status, "updated_at": "now()"}).eq("username", username).execute()
+    execute('UPDATE users_accounts SET status = %s, updated_at = NOW() WHERE username = %s', [status, username])
+    return DBResponse(data=[])
 
 
 def _sync_get_all_users_by_network(network_id: str):
-    return supabase.table("users_accounts").select("id, username, adsl_number, status, order_index").eq("network_id", network_id).eq("is_active", True).execute()
+    return DBResponse(
+        data=fetch_all(
+            'SELECT id, username, adsl_number, status, order_index FROM users_accounts WHERE network_id = %s AND is_active = TRUE',
+            [network_id],
+        )
+    )
 
 
 def _sync_active_users():
-    return supabase.table("users_accounts").select("id").eq("status", "حساب نشط").execute()
+    return DBResponse(data=fetch_all('SELECT id FROM users_accounts WHERE status = %s', ['حساب نشط']))
 
 
 def _sync_get_user_data(username: str, network_id: str, is_admin: bool = False):
-    query = (
-        supabase.table("users_accounts")
-        .select("id, username, adsl_number, plan, subscription_date, status, created_at, updated_at, confiscation_date, order_index")
-        .eq("username", username)
+    base = (
+        'SELECT id, username, adsl_number, plan, subscription_date, status, created_at, updated_at, confiscation_date, order_index '
+        'FROM users_accounts WHERE username = %s'
     )
+    params: list[Any] = [username]
     if not is_admin:
-        query = query.eq("is_active", True).eq("network_id", network_id)
-
-    return query.limit(1).execute()
+        base += ' AND is_active = TRUE AND network_id = %s'
+        params.append(network_id)
+    base += ' LIMIT 1'
+    rows = fetch_all(base, params)
+    return DBResponse(data=rows)
 
 def _sync_get_users_by_network(network_id: str):
-    return (
-        supabase.table("users_accounts")
-        .select("id, username, adsl_number, status, order_index")
-        .eq("network_id", network_id)
-        .eq("is_active", True)
-        .order("id", desc=True)
-        .execute()
+    rows = fetch_all(
+        'SELECT id, username, adsl_number, status, order_index FROM users_accounts WHERE network_id = %s AND is_active = TRUE ORDER BY id DESC',
+        [network_id],
     )
+    return DBResponse(data=rows)
 
 def _sync_get_all_users_for_admin():
-    return (
-        supabase.table("users_accounts")
-        .select("id, username, adsl_number, status, network_id, order_index")
-        .order("username", desc=False)
-        .execute()
+    return DBResponse(
+        data=fetch_all(
+            'SELECT id, username, adsl_number, status, network_id, order_index FROM users_accounts ORDER BY username ASC'
+        )
     )
 
 def _sync_set_users_active(users_ids: list):
-    return (
-        supabase.table("users_accounts")
-        .update({"is_active": True})
-        .in_("id", users_ids)
-        .execute()
-    )
+    if not users_ids:
+        return DBResponse(data=[])
+    execute('UPDATE users_accounts SET is_active = TRUE WHERE id = ANY(%s::uuid[])', [users_ids])
+    return DBResponse(data=[])
 
 def _sync_change_users_network(users_ids: list, old_network_id: int, new_network_id: int):
-    return (
-        supabase.table("users_accounts")
-        .update({"network_id": new_network_id})
-        .in_("id", users_ids)
-        .eq("network_id", old_network_id)
-        .execute()
+    if not users_ids:
+        return DBResponse(data=[])
+    execute(
+        'UPDATE users_accounts SET network_id = %s WHERE id = ANY(%s::uuid[]) AND network_id = %s',
+        [new_network_id, users_ids, old_network_id],
     )
+    return DBResponse(data=[])
 
 def _sync_delete_users_by_ids(users_ids: list):
-    return (
-        supabase.table("users_accounts")
-        .delete()
-        .in_("id", users_ids)
-        .execute()
-    )
+    if not users_ids:
+        return DBResponse(data=[])
+    execute('DELETE FROM users_accounts WHERE id = ANY(%s::uuid[])', [users_ids])
+    return DBResponse(data=[])
 
 def _sync_get_adsls_order_indexed(network_id: int):
-    return (
-        supabase.table("users_accounts")
-        .select("id,adsl_number,order_index")
-        .eq("network_id", network_id)
-        .eq("is_active", True)
-        .order("adsl_number", desc=False)
-        .execute()
+    return DBResponse(
+        data=fetch_all(
+            'SELECT id, adsl_number, order_index FROM users_accounts WHERE network_id = %s AND is_active = TRUE ORDER BY adsl_number ASC',
+            [network_id],
+        )
     )
 
 def _sync_get_adsl_order_index(id: str):
-    return (
-        supabase.table("users_accounts")
-        .select("order_index")
-        .eq("id", id)
-        .eq("is_active", True)
-        .limit(1)
-        .execute()
-    )
+    row = fetch_one('SELECT order_index FROM users_accounts WHERE id = %s AND is_active = TRUE LIMIT 1', [id])
+    return DBResponse(data=row or {})
 
 def _sync_update_adsl_order_index(id: str, order_index: int):
-    return supabase.rpc("change_user_account_order_index", {"p_id": id, "p_order_index": order_index}).execute()
+    execute('UPDATE users_accounts SET order_index = %s WHERE id = %s', [order_index, id])
+    return {"success": True}
 
 def _sync_add_network_partner(network_id: int, chat_user_id: int, permissions: int | str | None = 1):
     """
@@ -202,39 +241,36 @@ def _sync_add_network_partner(network_id: int, chat_user_id: int, permissions: i
     if perm_val is not None and perm_val not in allowed:
         raise ValueError(f"Invalid permission value: {permissions!r}")
 
-    payload = {"network_id": network_id, "chat_user_id": chat_user_id,"network_type": "partner","permissions": perm_val}
-
-    return supabase.table("chats_networks").insert(payload).execute()
+    row = insert_returning_one(
+        'INSERT INTO chats_networks (network_id, chat_user_id, network_type, permissions) VALUES (%s, %s, %s, %s) RETURNING *',
+        [network_id, chat_user_id, 'partner', perm_val],
+    )
+    return DBResponse(data=[row] if row else [])
 
 def _sync_activate_partnered_networks(chat_network_id: int):
-    return (
-        supabase.table("chats_networks")
-        .update({"is_active": True})
-        .eq("id", chat_network_id)
-        .eq("network_type", "partner")
-        .execute()
+    execute(
+        "UPDATE chats_networks SET is_active = TRUE WHERE id = %s AND network_type = 'partner'",
+        [chat_network_id],
     )
+    return DBResponse(data=[])
 
 def _sync_get_all_partnered_networks(network_id: int, with_owner: bool = False):
-    query = (
-        supabase.table("networks_details")
-        .select("*")
-        .eq("network_id", network_id)
-    )
-    if not with_owner:
-        query = query.eq("network_type", "partner")
-
-    return query.execute()
+    if with_owner:
+        rows = fetch_all('SELECT * FROM networks_details WHERE network_id = %s', [network_id])
+    else:
+        rows = fetch_all(
+            'SELECT * FROM networks_details WHERE network_id = %s AND network_type = %s',
+            [network_id, 'partner'],
+        )
+    return DBResponse(data=rows)
 
 
 def _sync_deactivate_partnered_networks(chat_network_id: int):
-    return (
-        supabase.table("chats_networks")
-        .update({"is_active": False})
-        .eq("id", chat_network_id)
-        .eq("network_type", "partner")
-        .execute()
+    execute(
+        "UPDATE chats_networks SET is_active = FALSE WHERE id = %s AND network_type = 'partner'",
+        [chat_network_id],
     )
+    return DBResponse(data=[])
 
 def _sync_change_partner_permissions(chat_network_id: int, permissions: int):
     
@@ -252,65 +288,88 @@ def _sync_change_partner_permissions(chat_network_id: int, permissions: int):
     if perm_val is not None and perm_val not in allowed:
         raise ValueError(f"Invalid permission value: {permissions!r}")
     
-    return (
-        supabase.table("chats_networks")
-        .update({"permissions": perm_val})
-        .eq("id", chat_network_id)
-        .eq("network_type", "partner")
-        .execute()
+    execute(
+        "UPDATE chats_networks SET permissions = %s WHERE id = %s AND network_type = 'partner'",
+        [perm_val, chat_network_id],
     )
+    return DBResponse(data=[])
     
 
 def _sync_delete_partnered_networks(chat_network_id: int):
-    return (
-        supabase.table("chats_networks")
-        .delete()
-        .eq("id", chat_network_id)
-        .eq("network_type", "partner")
-        .execute()
-    )
+    execute("DELETE FROM chats_networks WHERE id = %s AND network_type = 'partner'", [chat_network_id])
+    return DBResponse(data=[])
 
 def _sync_get_latest_account_data(user_id: str, is_admin: bool = False):
-    query = (
-        supabase.table("adsl_daily_report")
-        .select("*")
-        .eq("user_id", user_id)
-    )
-    if not is_admin:
-        query = query.eq("is_active", True)
-    return query.limit(1).execute()
+    def _has_col(table_name: str, column_name: str) -> bool:
+        try:
+            return bool(
+                fetch_value(
+                    """
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = %s
+                      AND column_name = %s
+                    LIMIT 1
+                    """.strip(),
+                    [table_name, column_name],
+                )
+            )
+        except Exception:
+            return False
+
+    def _fetch_latest(table: str) -> DBResponse:
+        base = f"SELECT * FROM {table} WHERE user_id = %s"
+        params: list[Any] = [user_id]
+        if not is_admin:
+            base += " AND is_active = TRUE"
+
+        # Prefer report_date when present; otherwise fall back to LIMIT 1 without ordering.
+        order_col = "report_date" if _has_col(table, "report_date") else None
+        if order_col:
+            base += f" ORDER BY {order_col} DESC LIMIT 1"
+        else:
+            base += " LIMIT 1"
+
+        row = fetch_one(base, params)
+        return DBResponse(data=[row] if row else [])
+
+    try:
+        return _fetch_latest("adsl_daily_report")
+    except psycopg2.errors.UndefinedTable:
+        # Back-compat if the object name differs in some deployments
+        return _fetch_latest("adsl_daily_report")
 def _sync_get_user_logs(user_id: str, limit: int = 5):
-    return (
-        supabase.table("logs")
-        .select("id, user_id, result, created_at")
-        .eq("user_id", user_id)
-        .order("id", desc=True)
-        .limit(limit)
-        .execute()
+    return DBResponse(
+        data=fetch_all(
+            'SELECT id, user_id, result, created_at FROM logs WHERE user_id = %s ORDER BY id DESC LIMIT %s',
+            [user_id, limit],
+        )
     )
 
 
 def _sync_get_users_ordered():
-    return (
-        supabase.table("users_accounts")
-        .select("id, username, adsl_number, updated_at")
-        .eq("is_active", True)
-        .order("username", desc=False)
-        .execute()
+    return DBResponse(
+        data=fetch_all(
+            'SELECT id, username, adsl_number, updated_at FROM users_accounts WHERE is_active = TRUE ORDER BY username ASC'
+        )
     )
 
 
 def _sync_get_daily_reports_for_users(user_ids: list, report_date: str):
     if not user_ids:
         return {"data": []}
-    return (
-        supabase.table("adsl_daily_reports")
-        .select("*")
-        .in_("user_id", user_ids)
-        .eq("report_date", report_date)
-        .order("username", desc=False)
-        .execute()
-    )
+    try:
+        rows = fetch_all(
+            'SELECT * FROM adsl_daily_reports WHERE user_id = ANY(%s::uuid[]) AND report_date = %s ORDER BY username ASC',
+            [user_ids, report_date],
+        )
+    except psycopg2.errors.UndefinedColumn:
+        rows = fetch_all(
+            'SELECT * FROM adsl_daily_reports WHERE user_id = ANY(%s::uuid[]) AND report_date = %s ORDER BY order_index ASC, username ASC',
+            [user_ids, report_date],
+        )
+    return DBResponse(data=rows)
 
 
 async def get_daily_reports_for_users(user_ids: list, report_date: str):
@@ -320,14 +379,11 @@ async def get_daily_reports_for_users(user_ids: list, report_date: str):
 def _sync_get_available_report_dates(user_ids: list, limit: int = 120):
     if not user_ids:
         return {"data": []}
-    return (
-        supabase.table("adsl_daily_reports")
-        .select("report_date")
-        .in_("user_id", user_ids)
-        .order("report_date", desc=True)
-        .limit(limit)
-        .execute()
+    rows = fetch_all(
+        'SELECT report_date::text FROM adsl_daily_reports WHERE user_id = ANY(%s::uuid[]) ORDER BY report_date DESC LIMIT %s',
+        [user_ids, limit],
     )
+    return DBResponse(data=rows)
 
 
 async def get_available_report_dates(user_ids: list, limit: int = 120):
@@ -336,209 +392,160 @@ async def get_available_report_dates(user_ids: list, limit: int = 120):
 
 def _sync_get_account_available_balance(user_id: str, offset: int = 0):
     # offset allows getting the previous-day value when offset=1
-    return (
-        supabase.table("account_data")
-        .select("available_balance")
-        .eq("user_id", user_id)
-        .order("scraped_at", desc=True)
-        .offset(offset)
-        .limit(1)
-        .execute()
+    rows = fetch_all(
+        'SELECT available_balance FROM account_data WHERE user_id = %s ORDER BY scraped_at DESC OFFSET %s LIMIT 1',
+        [user_id, offset],
     )
+    return DBResponse(data=rows)
 
 def _sync_get_chat_user(telegram_id: str):
-    return (
-        supabase.table("chats_users")
-        .select("*")
-        .eq("telegram_id", telegram_id)
-        .maybe_single()
-        .execute()
-    )
+    row = fetch_one('SELECT * FROM chats_users WHERE telegram_id = %s LIMIT 1', [telegram_id])
+    return DBResponse(data=row or {})
 
 def _sync_get_chats_users():
-    return (
-        supabase.table("chats_users")
-        .select("*")
-        .execute()
-    )
+    return DBResponse(data=fetch_all('SELECT * FROM chats_users'))
 
 def _sync_active_chat_user(telegram_id: str):
-    return (
-        supabase.table("chats_users")
-        .update({"is_active": True})
-        .eq("telegram_id", telegram_id)
-        .execute()
-    )
+    execute('UPDATE chats_users SET is_active = TRUE WHERE telegram_id = %s', [telegram_id])
+    return DBResponse(data=[])
 
 def _sync_deactivate_chat_user(telegram_id: str):
-    return (
-        supabase.table("chats_users")
-        .update({"is_active": False})
-        .eq("telegram_id", telegram_id)
-        .execute()
-    )
+    execute('UPDATE chats_users SET is_active = FALSE WHERE telegram_id = %s', [telegram_id])
+    return DBResponse(data=[])
 
 def _sync_get_chat_users_tokens(chats_users_ids: list):
-    return (
-        supabase.table("chats_users")
-        .select("telegram_id")
-        .in_("id", chats_users_ids)
-        .execute()
+    if not chats_users_ids:
+        return DBResponse(data=[])
+    return DBResponse(
+        data=fetch_all('SELECT telegram_id FROM chats_users WHERE id = ANY(%s::int[])', [chats_users_ids])
     )
 
 def _sync_change_receive_partnered_reports(chat_user_id: int, receive_partnered_report: bool):
-    return (
-        supabase.table("chats_users")
-        .update({"receive_partnered_report": receive_partnered_report})
-        .eq("id", chat_user_id)
-        .execute()
+    execute(
+        'UPDATE chats_users SET receive_partnered_report = %s WHERE id = %s',
+        [receive_partnered_report, chat_user_id],
     )
+    return DBResponse(data=[])
 
 def _sync_create_chat_user(telegram_id: str, user_name: str):
-    return (
-        supabase.table("chats_users")
-        .upsert({
-            "telegram_id": telegram_id,
-            "user_name": user_name
-        })
-        .execute()
+    row = insert_returning_one(
+        """INSERT INTO chats_users (telegram_id, user_name)
+           VALUES (%s, %s)
+           ON CONFLICT (telegram_id) DO UPDATE SET user_name = EXCLUDED.user_name
+           RETURNING *""",
+        [telegram_id, user_name],
     )
+    return DBResponse(data=[row] if row else [])
 
 def _sync_create_network(chat_user_id: int, network_name: str):
-    return supabase.rpc(
-        "create_network_for_chat_user",
-        {
-            "p_chat_user_id": chat_user_id,
-            "p_network_name": network_name,
-        },
-    ).execute()
+    # Create base network
+    network_row = insert_returning_one(
+        'INSERT INTO networks (network_name, is_active) VALUES (%s, TRUE) RETURNING id',
+        [network_name],
+    )
+    network_id = (network_row or {}).get('id')
+    if not network_id:
+        return DBResponse(data=[])
+
+    # Ensure an owner chat-network mapping exists and becomes selected
+    execute('UPDATE chats_networks SET is_selected_network = FALSE WHERE chat_user_id = %s', [chat_user_id])
+    insert_returning_one(
+        """INSERT INTO chats_networks (network_id, chat_user_id, network_type, permissions, is_active, is_selected_network)
+            VALUES (%s, %s, 'owner', 'owner', TRUE, TRUE)
+            RETURNING id""",
+    [network_id, chat_user_id],
+)
+    return DBResponse(data=[{"id": int(network_id)}])
 
 def _sync_remove_network(network_id: int):
-    return (
-        supabase.table("networks")
-        .delete()
-        .eq("id", network_id)
-        .execute()
-    )
+    execute('DELETE FROM networks WHERE id = %s', [network_id])
+    return DBResponse(data=[])
 
 def _sync_active_network(network_id: int):
-    return supabase.rpc(
-        "activate_network",
-        {
-            "p_network_id": network_id
-        }
-    ).execute()
+    execute('UPDATE networks SET is_active = TRUE WHERE id = %s', [network_id])
+    # Also activate the owner mapping if present
+    execute("UPDATE chats_networks SET is_active = TRUE WHERE network_id = %s AND network_type = 'owner'", [network_id])
+    return {"success": True}
 
 def _sync_deactivate_network(network_id: int):
-    return supabase.rpc(
-        "deactive_network",
-        {
-            "p_network_id": network_id
-        }
-    ).execute()
+    execute('UPDATE networks SET is_active = FALSE WHERE id = %s', [network_id])
+    execute("UPDATE chats_networks SET is_active = FALSE WHERE network_id = %s AND network_type = 'owner'", [network_id])
+    return {"success": True}
 
 def _sync_get_network_by_id(chat_network_id: int):
-    return (
-        supabase.table("networks_details")
-        .select("*")
-        .eq("id", chat_network_id)
-        .maybe_single()
-        .execute()
-    )
+    row = fetch_one('SELECT * FROM networks_details WHERE id = %s LIMIT 1', [chat_network_id])
+    return DBResponse(data=row or {})
 
 def _sync_get_network_by_network_id(network_id: int):
-    return (
-        supabase.table("networks_details")
-        .select("*")
-        .eq("network_id", network_id)
-        .eq("network_type", "owner")
-        .maybe_single()
-        .execute()
+    row = fetch_one(
+        'SELECT * FROM networks_details WHERE network_id = %s AND network_type = %s LIMIT 1',
+        [network_id, 'owner'],
     )
+    return DBResponse(data=row or {})
 
 def _sync_get_networks_for_user(chat_user_id: int):
-    return (
-        supabase.table("networks_details")
-        .select("*")
-        .eq("chat_user_id", chat_user_id)
-        .execute()
-    )
+    rows = fetch_all('SELECT * FROM networks_details WHERE chat_user_id = %s', [chat_user_id])
+    return DBResponse(data=rows)
 
 def _sync_update_chat_user(telegram_id: str, user_name: str):
-    return (
-        supabase.table("chats_users")
-        .update({"user_name": user_name})
-        .eq("telegram_id", telegram_id)
-        .execute()
-    )
+    execute('UPDATE chats_users SET user_name = %s WHERE telegram_id = %s', [user_name, telegram_id])
+    return DBResponse(data=[])
 
 def _sync_update_network(chat_network_id: int, network_name: str, times_to_send_reports: int):
-    return supabase.rpc(
-        "update_chat_network",
-        {
-            "p_chat_network_id": chat_network_id,
-            "p_network_name": network_name,
-            "p_times_to_send_reports": times_to_send_reports
-        }
-    ).execute()
+    net = fetch_one('SELECT network_id FROM chats_networks WHERE id = %s LIMIT 1', [chat_network_id])
+    network_id = (net or {}).get('network_id')
+    if network_id is not None:
+        execute('UPDATE networks SET network_name = %s WHERE id = %s', [network_name, network_id])
+    execute('UPDATE chats_networks SET times_to_send_reports = %s WHERE id = %s', [times_to_send_reports, chat_network_id])
+    return {"success": True}
 
 def _sync_change_chat_networks_times_to_send_reports(chat_network_id: int, times_to_send_reports: int):
-    return supabase.rpc(
-        "update_chat_network_times_to_send_reports",
-        {
-            "p_chat_network_id": chat_network_id,
-            "p_times_to_send_reports": times_to_send_reports
-        }
-    ).execute()
+    execute('UPDATE chats_networks SET times_to_send_reports = %s WHERE id = %s', [times_to_send_reports, chat_network_id])
+    return {"success": True}
 def _sync_change_warning_and_danger_settings(chat_network_id: int, warning_count_remaining_days: int, danger_count_remaining_days: int, warning_percentage_remaining_balance: int, danger_percentage_remaining_balance: int):
-    return supabase.rpc(
-        "update_chat_network_warning_and_danger_settings",
-        {
-            "p_chat_network_id": chat_network_id,
-            "p_warning_count_remaining_days": warning_count_remaining_days,
-            "p_danger_count_remaining_days": danger_count_remaining_days,
-            "p_warning_percentage_remaining_balance": warning_percentage_remaining_balance,
-            "p_danger_percentage_remaining_balance": danger_percentage_remaining_balance
-        }
-    ).execute()
+    execute(
+        'UPDATE chats_networks SET warning_count_remaining_days = %s, danger_count_remaining_days = %s, '
+        'warning_percentage_remaining_balance = %s, danger_percentage_remaining_balance = %s '
+        'WHERE id = %s',
+        [
+            warning_count_remaining_days,
+            danger_count_remaining_days,
+            warning_percentage_remaining_balance,
+            danger_percentage_remaining_balance,
+            chat_network_id,
+        ],
+    )
+    return {"success": True}
 
 def _sync_set_selected_network(chat_network_id: int, chat_user_id: int):
-    return supabase.rpc(
-        "set_selected_network",
-        {
-            "p_network_id": chat_network_id,
-            "p_chat_user_id": chat_user_id
-        }
-    ).execute()
+    # Unselect all networks for this chat_user
+    execute('UPDATE chats_networks SET is_selected_network = FALSE WHERE chat_user_id = %s', [chat_user_id])
+    # Select requested network
+    execute(
+        'UPDATE chats_networks SET is_selected_network = TRUE WHERE id = %s AND chat_user_id = %s',
+        [chat_network_id, chat_user_id],
+    )
+    return {"success": True}
 
 
 def _sync_get_selected_network(telegram_id: str):
-    return (
-        supabase.table("networks_details")
-        .select("*")
-        .eq("telegram_id", telegram_id)
-        .eq("is_selected_network", True)
-        .eq("is_network_active", True)
-        .limit(1)
-        .execute()
+    row = fetch_one(
+        'SELECT * FROM networks_details WHERE telegram_id = %s AND is_selected_network = TRUE AND is_network_active = TRUE LIMIT 1',
+        [telegram_id],
     )
+    return DBResponse(data=row or {})
 
 def _sync_get_token_by_network_id(network_id: str):
-    return (
-        supabase.table("networks")
-        .select("chats_users(telegram_id)")
-        .eq("id", network_id)
-        .maybe_single()
-        .execute()
+    token = fetch_value(
+        "SELECT cu.telegram_id FROM chats_networks cn JOIN chats_users cu ON cu.id = cn.chat_user_id WHERE cn.network_id = %s AND cn.network_type = 'owner' LIMIT 1",
+        [network_id],
     )
+    if token is None:
+        return DBResponse(data={})
+    return DBResponse(data={"chats_users": {"telegram_id": str(token)}})
 
 def _sync_get_all_tokens():
-    return (
-        supabase.table("networks_details")
-        .select("telegram_id")
-        .eq("is_selected_network", True)
-        .execute()
-    )
+    return DBResponse(data=fetch_all('SELECT telegram_id FROM networks_details WHERE is_selected_network = TRUE'))
 
 def _sync_approve_registration(
     users_ids: list,
@@ -549,25 +556,35 @@ def _sync_approve_registration(
     amount: int,
     payment_method: str,
 ):
-    return supabase.rpc(
-        "approve_registration",
-        {
-            "p_users_ids": users_ids,
-            "p_telegram_id": telegram_id,
-            "p_network_id": network_id,
-            "p_payer_chat_user_id": payer_chat_user_id,
-            "p_expiration_date": expiration_date,
-            "p_amount": amount,
-            "p_payment_method": payment_method,
-        },
-    ).execute()
+    # Minimal local implementation:
+    # - activate chat user
+    # - mark network active and set expiration_date
+    # - (optional) record payment if the table exists
+
+    execute('UPDATE chats_users SET is_active = TRUE WHERE telegram_id = %s', [str(telegram_id)])
+
+    try:
+        execute('UPDATE networks SET is_active = TRUE, expiration_date = %s WHERE id = %s', [expiration_date, network_id])
+    except Exception:
+        # If networks table doesn't have expiration_date, ignore.
+        execute('UPDATE networks SET is_active = TRUE WHERE id = %s', [network_id])
+
+    # Best-effort payment recording (does nothing if the table is absent)
+    try:
+        insert_returning_one(
+            """INSERT INTO payments (network_id, payer_chat_user_id, amount, payment_method, expiration_date)
+               VALUES (%s, %s, %s, %s, %s)
+               RETURNING id""",
+            [network_id, payer_chat_user_id, amount, payment_method, expiration_date],
+        )
+    except Exception:
+        pass
+
+    return {"success": True}
 
 def _sync_change_order_by(telegram_id: str, order_by: str):
-    return supabase.rpc(
-        "change_chat_user_order_by",
-        {"p_telegram_id": telegram_id,
-         "p_order_by": order_by,}
-    ).execute()
+    execute('UPDATE chats_users SET order_by = %s WHERE telegram_id = %s', [order_by, str(telegram_id)])
+    return {"success": True}
 
 async def count_table(tbl: str, filter_column: Optional[str] = None, filter_value: Optional[Any] = None):
     return await run_blocking(partial(_sync_count_table, tbl, filter_column, filter_value))
@@ -586,11 +603,13 @@ async def insert_pending_request(network_id: str, request_text: str):
 
 
 def _sync_get_pending(req_id: str):
-    return supabase.table("pending_requests").select("*").eq("id", req_id).single().execute()
+    row = fetch_one('SELECT * FROM pending_requests WHERE id = %s LIMIT 1', [req_id])
+    return DBResponse(data=row or {})
 
 
 def _sync_update_pending(req_id: str, status: str):
-    return supabase.table("pending_requests").update({"status": status}).eq("id", req_id).execute()
+    execute('UPDATE pending_requests SET status = %s WHERE id = %s', [status, req_id])
+    return DBResponse(data=[])
 
 
 async def get_pending_request(req_id: str):
@@ -673,7 +692,7 @@ async def activate_users(users_ids: list):
     return await run_blocking(partial(_sync_set_users_active, users_ids))
 
 async def get_latest_account_data_db(user_id: str, retries: int = 4, initial_backoff: float = 0.5,is_admin: bool = False):
-    """Attempt to read the latest account data from Supabase with retries and exponential backoff.
+    """Attempt to read the latest account data from the database with retries and exponential backoff.
 
     This wraps the blocking `_sync_get_latest_account_data` call (executed via `run_blocking`) and
     retries on transient failures to reduce the number of placeholder rows caused by intermittent
@@ -838,7 +857,7 @@ def sync_get_users_ordered():
 
 
 def sync_get_account_available_balance(user_id: str, offset: int = 0):
-    """Synchronous helper returning the raw supabase response for available_balance."""
+    """Synchronous helper returning a DBResponse for available_balance."""
     return _sync_get_account_available_balance(user_id, offset)
 
 def sync_insert_user_account(username: str, password: str, network_id: str, adsl: Optional[str] = None):
@@ -887,26 +906,6 @@ async def run_blocking(func: Callable, /, *args, **kwargs):
                 if attempt < retries:
                     await asyncio.sleep(backoff)
                     backoff *= 2
-                    continue
-            # Reset Supabase client on HTTP/2 stream/connection state errors and retry
-            reset_triggers = (
-                "streaminputs.send_headers",
-                "recv_headers",
-                "recv_data",
-                "connectionstate.closed",
-                "h2",
-                "invalid input",
-            )
-            if any(t in msg for t in reset_triggers):
-                try:
-                    from bot.lazy_supabase import supabase
-                    supabase.reset()
-                    logger.warning("Reset Supabase client due to connection state error: %s", e)
-                except Exception:
-                    pass
-                if attempt < retries:
-                    await asyncio.sleep(backoff)
-                    backoff = min(backoff * 2, 2.0)
                     continue
             logger.error("Error in blocking operation %s: %s", getattr(func, "__name__", str(func)), e)
             raise

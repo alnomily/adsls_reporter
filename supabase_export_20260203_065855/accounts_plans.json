@@ -1,0 +1,302 @@
+[
+  {
+    "id": 30,
+    "name": "SS8-3",
+    "data_limit": 725,
+    "plan_price": 60200,
+    "gb_price": 83.034,
+    "speed": 8,
+    "plan_type": "سوبرشامل",
+    "created_at": "2025-10-31T00:30:19.470998+00:00"
+  },
+  {
+    "id": 1,
+    "name": "SN1-1",
+    "data_limit": 10,
+    "plan_price": 1500,
+    "gb_price": 150,
+    "speed": 1,
+    "plan_type": "سوبرنت",
+    "created_at": "2025-10-30T00:21:32.262041+00:00"
+  },
+  {
+    "id": 2,
+    "name": "SN1-2",
+    "data_limit": 24,
+    "plan_price": 3000,
+    "gb_price": 125,
+    "speed": 1,
+    "plan_type": "سوبرنت",
+    "created_at": "2025-10-30T23:51:41.255063+00:00"
+  },
+  {
+    "id": 3,
+    "name": "SN1-3",
+    "data_limit": 100,
+    "plan_price": 10000,
+    "gb_price": 100,
+    "speed": 1,
+    "plan_type": "سوبرنت",
+    "created_at": "2025-10-30T23:52:54.752729+00:00"
+  },
+  {
+    "id": 4,
+    "name": "SN2-1",
+    "data_limit": 24,
+    "plan_price": 2520,
+    "gb_price": 105,
+    "speed": 2,
+    "plan_type": "سوبرنت",
+    "created_at": "2025-10-30T23:55:39.706502+00:00"
+  },
+  {
+    "id": 5,
+    "name": "SN2-2",
+    "data_limit": 50,
+    "plan_price": 4725,
+    "gb_price": 94.5,
+    "speed": 2,
+    "plan_type": "سوبرنت",
+    "created_at": "2025-10-30T23:56:57.08321+00:00"
+  },
+  {
+    "id": 6,
+    "name": "SN2-3",
+    "data_limit": 188,
+    "plan_price": 15750,
+    "gb_price": 83.77,
+    "speed": 2,
+    "plan_type": "سوبرنت",
+    "created_at": "2025-10-30T23:56:57.08321+00:00"
+  },
+  {
+    "id": 8,
+    "name": "SN4-2",
+    "data_limit": 280,
+    "plan_price": 25625,
+    "gb_price": 91.517,
+    "speed": 4,
+    "plan_type": "سوبرنت",
+    "created_at": "2025-10-31T00:02:38.057954+00:00"
+  },
+  {
+    "id": 7,
+    "name": "SN4-1",
+    "data_limit": 66,
+    "plan_price": 6930,
+    "gb_price": 105,
+    "speed": 4,
+    "plan_type": "سوبرنت",
+    "created_at": "2025-10-31T00:02:38.057954+00:00"
+  },
+  {
+    "id": 9,
+    "name": "SN4-3",
+    "data_limit": 480,
+    "plan_price": 39900,
+    "gb_price": 83.125,
+    "speed": 4,
+    "plan_type": "سوبرنت",
+    "created_at": "2025-10-31T00:02:38.057954+00:00"
+  },
+  {
+    "id": 10,
+    "name": "SN8-1",
+    "data_limit": 120,
+    "plan_price": 12600,
+    "gb_price": 105,
+    "speed": 8,
+    "plan_type": "سوبرنت",
+    "created_at": "2025-10-31T00:07:17.329662+00:00"
+  },
+  {
+    "id": 11,
+    "name": "SN8-2",
+    "data_limit": 420,
+    "plan_price": 39375,
+    "gb_price": 91.75,
+    "speed": 8,
+    "plan_type": "سوبرنت",
+    "created_at": "2025-10-31T00:07:17.329662+00:00"
+  },
+  {
+    "id": 12,
+    "name": "SN8-3",
+    "data_limit": 720,
+    "plan_price": 59850,
+    "gb_price": 83.125,
+    "speed": 8,
+    "plan_type": "سوبرنت",
+    "created_at": "2025-10-31T00:07:17.329662+00:00"
+  },
+  {
+    "id": 22,
+    "name": "SS2-1",
+    "data_limit": 28,
+    "plan_price": 2900,
+    "gb_price": 103.571,
+    "speed": 2,
+    "plan_type": "سوبرشامل",
+    "created_at": "2025-10-31T00:24:22.466594+00:00"
+  },
+  {
+    "id": 23,
+    "name": "SS2-2",
+    "data_limit": 54,
+    "plan_price": 5100,
+    "gb_price": 94.444,
+    "speed": 2,
+    "plan_type": "سوبرشامل",
+    "created_at": "2025-10-31T00:24:22.466594+00:00"
+  },
+  {
+    "id": 24,
+    "name": "SS2-3",
+    "data_limit": 192,
+    "plan_price": 16100,
+    "gb_price": 83.854,
+    "speed": 2,
+    "plan_type": "سوبرشامل",
+    "created_at": "2025-10-31T00:24:22.466594+00:00"
+  },
+  {
+    "id": 25,
+    "name": "SS4-1",
+    "data_limit": 70,
+    "plan_price": 7300,
+    "gb_price": 104.285,
+    "speed": 4,
+    "plan_type": "سوبرشامل",
+    "created_at": "2025-10-31T00:27:37.755935+00:00"
+  },
+  {
+    "id": 26,
+    "name": "SS4-2",
+    "data_limit": 284,
+    "plan_price": 26600,
+    "gb_price": 93.661,
+    "speed": 4,
+    "plan_type": "سوبرشامل",
+    "created_at": "2025-10-31T00:27:37.755935+00:00"
+  },
+  {
+    "id": 27,
+    "name": "SS4-3",
+    "data_limit": 485,
+    "plan_price": 40300,
+    "gb_price": 83.092,
+    "speed": 4,
+    "plan_type": "سوبرشامل",
+    "created_at": "2025-10-31T00:27:37.755935+00:00"
+  },
+  {
+    "id": 28,
+    "name": "SS8-1",
+    "data_limit": 124,
+    "plan_price": 13000,
+    "gb_price": 104.838,
+    "speed": 8,
+    "plan_type": "سوبرشامل",
+    "created_at": "2025-10-31T00:30:19.470998+00:00"
+  },
+  {
+    "id": 29,
+    "name": "SS8-2",
+    "data_limit": 425,
+    "plan_price": 39800,
+    "gb_price": 93.647,
+    "speed": 8,
+    "plan_type": "سوبرشامل",
+    "created_at": "2025-10-31T00:30:19.470998+00:00"
+  },
+  {
+    "id": 13,
+    "name": "FN25-1",
+    "data_limit": 40,
+    "plan_price": 6200,
+    "gb_price": 155,
+    "speed": 25,
+    "plan_type": "فيبرنت",
+    "created_at": "2025-10-31T00:12:26.219286+00:00"
+  },
+  {
+    "id": 14,
+    "name": "FN25-2",
+    "data_limit": 100,
+    "plan_price": 12500,
+    "gb_price": 125,
+    "speed": 25,
+    "plan_type": "فيبرنت",
+    "created_at": "2025-10-31T00:12:26.219286+00:00"
+  },
+  {
+    "id": 15,
+    "name": "FN25-3",
+    "data_limit": 400,
+    "plan_price": 38500,
+    "gb_price": 92.25,
+    "speed": 25,
+    "plan_type": "فيبرنت",
+    "created_at": "2025-10-31T00:12:26.219286+00:00"
+  },
+  {
+    "id": 16,
+    "name": "FN50-1",
+    "data_limit": 160,
+    "plan_price": 22300,
+    "gb_price": 139.375,
+    "speed": 50,
+    "plan_type": "فيبرنت",
+    "created_at": "2025-10-31T00:16:14.007691+00:00"
+  },
+  {
+    "id": 17,
+    "name": "FN50-2",
+    "data_limit": 680,
+    "plan_price": 76300,
+    "gb_price": 112.205,
+    "speed": 50,
+    "plan_type": "فيبرنت",
+    "created_at": "2025-10-31T00:16:14.007691+00:00"
+  },
+  {
+    "id": 18,
+    "name": "FN50-3",
+    "data_limit": 1500,
+    "plan_price": 137500,
+    "gb_price": 91.666,
+    "speed": 50,
+    "plan_type": "فيبرنت",
+    "created_at": "2025-10-31T00:16:14.007691+00:00"
+  },
+  {
+    "id": 19,
+    "name": "FN100-1",
+    "data_limit": 250,
+    "plan_price": 34000,
+    "gb_price": 136,
+    "speed": 100,
+    "plan_type": "فيبرنت",
+    "created_at": "2025-10-31T00:19:18.520788+00:00"
+  },
+  {
+    "id": 20,
+    "name": "FN100-2",
+    "data_limit": 1000,
+    "plan_price": 111500,
+    "gb_price": 111.5,
+    "speed": 100,
+    "plan_type": "فيبرنت",
+    "created_at": "2025-10-31T00:19:18.520788+00:00"
+  },
+  {
+    "id": 21,
+    "name": "FN100-3",
+    "data_limit": 1800,
+    "plan_price": 164500,
+    "gb_price": 91.388,
+    "speed": 100,
+    "plan_type": "فيبرنت",
+    "created_at": "2025-10-31T00:19:18.520788+00:00"
+  }
+]

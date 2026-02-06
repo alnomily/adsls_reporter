@@ -752,6 +752,7 @@ class TableReportGenerator:
         current_y = table_start_y + header_h
         max_table_height = height - 200
         for i, line_data in enumerate(lines_data):
+            logger.info("Drawing row %d for line %s", i + 1, line_data)
             if current_y + 25 > max_table_height:
                 break
             row_h = self._draw_rtl_table_row(draw,network, line_data, current_y, columns, i)

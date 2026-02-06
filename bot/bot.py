@@ -118,13 +118,13 @@ def add_log(message: str, tag: str = None, path: str = None) -> None:
 async def main() -> None:
     logger.info("Starting YemenNet Bot...")
 
-    # test supabase connectivity
+    # test local postgres connectivity
     try:
         # quick connectivity check via count_table
-        await count_table("temp_users")
-        logger.info("Supabase connected ✅")
+        await count_table("users_accounts")
+        logger.info("PostgreSQL connected ✅")
     except Exception as e:
-        logger.exception("Supabase connection failed ❌: %s", e)
+        logger.exception("PostgreSQL connection failed ❌: %s", e)
         return
 
     # nicer command menu (use emojis for visual appeal) and optional startup message to admin

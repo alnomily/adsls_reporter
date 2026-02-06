@@ -1,0 +1,78 @@
+[
+  {
+    "id": "c2072da7-601e-4b55-8ff2-2512302fbdd2",
+    "receiver_id": "f3e864df-fb7e-48ac-8362-33503954eb19",
+    "sender_id": null,
+    "chat_id": null,
+    "title": "رسالة جماعية",
+    "body": "إشعار لجميع المستخدمين 👥",
+    "data": {
+      "type": "broadcast",
+      "timestamp": "2025-12-18 23:12:54.497901"
+    },
+    "fcm_message_id": "0:1766088778716288%6a1de24c6a1de24c",
+    "read": false,
+    "received_at": "2025-12-18T23:13:00.473719+00:00",
+    "opened_at": null,
+    "source": "push",
+    "updated_at": "2025-12-18T23:13:00.473719+00:00"
+  },
+  {
+    "id": "486f8903-2502-4fc2-b837-01ade4b42fd2",
+    "receiver_id": "f3e864df-fb7e-48ac-8362-33503954eb19",
+    "sender_id": null,
+    "chat_id": null,
+    "title": "Free username gift",
+    "body": "🎉🎉لقد حصلت على كرت مجاني من فئة 500.\nرقم الكرت: 727727",
+    "data": {
+      "type": "chat",
+      "profile": "500",
+      "username": "727727"
+    },
+    "fcm_message_id": "0:1768984739764584%6a1de24c6a1de24c",
+    "read": false,
+    "received_at": "2026-01-21T11:39:00.684121+00:00",
+    "opened_at": null,
+    "source": "push",
+    "updated_at": "2026-01-21T11:39:00.684121+00:00"
+  },
+  {
+    "id": "be65dd86-fc2a-4394-b5cd-d1020e16fb07",
+    "receiver_id": "f3e864df-fb7e-48ac-8362-33503954eb19",
+    "sender_id": null,
+    "chat_id": null,
+    "title": "رسالة جماعية",
+    "body": "إشعار لجميع المستخدمين 👥",
+    "data": {
+      "type": "broadcast",
+      "timestamp": "2026-01-21 11:39:21.321189"
+    },
+    "fcm_message_id": "0:1768984764148327%6a1de24c6a1de24c",
+    "read": false,
+    "received_at": "2026-01-21T11:39:24.844409+00:00",
+    "opened_at": null,
+    "source": "push",
+    "updated_at": "2026-01-21T11:39:24.844409+00:00"
+  },
+  {
+    "id": "8c9d4dd5-021d-4b3f-a541-d63cd8b13b7a",
+    "receiver_id": "67811855-1404-4cc3-be18-aabc3d0555c7",
+    "sender_id": null,
+    "chat_id": null,
+    "title": "رسالة جديدة",
+    "body": "وصلك إشعار جديد",
+    "data": {
+      "body": "🎉🎉لقد حصلت على كرت مجاني من فئة ١٥٠.\nرقم الكرت: 2",
+      "type": "chat",
+      "title": "Free username gift",
+      "profile": "١٥٠",
+      "username": "2"
+    },
+    "fcm_message_id": "0:1769737231743732%6a1de24cf9fd7ecd",
+    "read": false,
+    "received_at": "2026-01-30T04:40:50.649588+00:00",
+    "opened_at": null,
+    "source": "push",
+    "updated_at": "2026-01-30T04:40:50.649588+00:00"
+  }
+]

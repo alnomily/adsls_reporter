@@ -1,0 +1,62 @@
+[
+  {
+    "id": "f3e864df-fb7e-48ac-8362-33503954eb19",
+    "name": null,
+    "fcm_token": "dWtWHqxtSUay-x5A6bF0pf:APA91bGp4MWUccPiZYKZ5MQ3wSsbvwPSqwqVUxD_qIIqOseidNqZVqSIoU836mmnaa-CQqNN7u7TD3xnM54xAjyLTRRWqrHVOHJDDQaUoiGVIXA03_T01-g",
+    "device_id": "SKQ1.210908.001",
+    "device_name": "Xiaomi Redmi K30",
+    "platform": "android",
+    "created_at": "2025-12-18T22:25:01.13808+00:00",
+    "updated_at": "2026-01-29T23:38:48.199233+00:00",
+    "latitude": 15.3406665,
+    "longitude": 44.157579
+  },
+  {
+    "id": "2617473b-0e31-4c11-bd6f-9a55127db664",
+    "name": null,
+    "fcm_token": "eXWxZF6gSCKMq0LITFHbI5:APA91bH8PQZq4t8-geILfOgjwyxMZ4yQdsVVwasOHX0rCZYDA9t0WwtFS6sIMkxCJ7lkkB9K-__rpOqPfsW5cPsQjpz5q2UjGqCxSD73UFwYpXEyzzuyxWI",
+    "device_id": null,
+    "device_name": null,
+    "platform": null,
+    "created_at": "2025-12-15T01:18:14.878543+00:00",
+    "updated_at": "2025-12-15T01:18:14.878543+00:00",
+    "latitude": null,
+    "longitude": null
+  },
+  {
+    "id": "67811855-1404-4cc3-be18-aabc3d0555c7",
+    "name": null,
+    "fcm_token": "fot6ve6eTZKVuWeGGFzjMu:APA91bEl-3OxyGNWpTm0xK3slguKlGp-8t_XXfcPbw7CftRuvvcwlGVQzMy1Xc6hlXrumfw5oArUHzw-LEKSJqQVtqCz-H5QW_qBrLGolWjZ-HkTEh85lP8",
+    "device_id": "RKQ1.200826.002",
+    "device_name": "Xiaomi POCO X2",
+    "platform": "android",
+    "created_at": "2026-01-29T07:32:40.232356+00:00",
+    "updated_at": "2026-01-31T06:18:32.203458+00:00",
+    "latitude": null,
+    "longitude": null
+  },
+  {
+    "id": "90fbf918-dd81-4712-b407-11bc7360a45c",
+    "name": null,
+    "fcm_token": "dCEZwNvTSBaPHgukGLAnGf:APA91bHQjeOx9NwfDu2az_5t9aqLnmXEd4KPfiK3l9_A45hHINfgBliHSDyyAc2kT_rNoBJN2pLdQ97evK_uqiOTPmlZpn3Fv_FX6lsr_a2BGPy_eTCkOLE",
+    "device_id": "QP1A.190711.020",
+    "device_name": "samsung SM-N960U",
+    "platform": "android",
+    "created_at": "2026-01-09T03:36:10.907524+00:00",
+    "updated_at": "2026-02-01T20:52:59.930489+00:00",
+    "latitude": 15.3552452,
+    "longitude": 44.1764965
+  },
+  {
+    "id": "f10d72d9-de00-4101-9f35-ea328f22b228",
+    "name": null,
+    "fcm_token": "cEsJ-a7AQsilfvE_98ACHu:APA91bEkmu376hYZpmzj1jm7fPgJRm2iIo6b4MYj96HJ_fiYfcdxd3rvaYxGMlPtQe54WFECp5-sU_PMKbB3oGcjSxtiFt5V-WcZ809CIN9LS0JEyCYff7k",
+    "device_id": "AP3A.240905.015.A2",
+    "device_name": "samsung SM-G998U",
+    "platform": "android",
+    "created_at": "2026-01-20T07:10:42.936075+00:00",
+    "updated_at": "2026-02-02T10:50:03.307199+00:00",
+    "latitude": 15.3936045,
+    "longitude": 44.1822233
+  }
+]

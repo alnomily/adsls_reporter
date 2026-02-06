@@ -220,7 +220,7 @@ async def handle_approve_reject(callback: types.CallbackQuery):
     request_text = request.get('text')
 
     if action == "approve":
-        # Insert users into Supabase based on request_text (format: "adsl:username adsl2:username2 ...")
+        # Insert users into the database based on request_text (format: "adsl:username adsl2:username2 ...")
         try:
             from bot.user_manager import UserManager
             from bot.utils_shared import update_pending_status

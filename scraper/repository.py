@@ -1,79 +1,122 @@
 import logging
+import re
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from scraper.yemen_net_plan_manage import yemen_net
 
-from .session import get_supabase
+from bot.local_postgres import call_function, execute, fetch_all, fetch_one
 
 logger = logging.getLogger("yemen_scraper.repo")
 
 
+def _parse_expiry_date(value: Any) -> Optional[date]:
+    """Best-effort parsing for scraped expiry date strings.
+
+    Examples seen:
+      - "Tuesday 17/02/2026 06:00 PM"
+      - "17/02/2026 06:00 PM"
+      - "17/02/2026"
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+
+    s = str(value).strip()
+    if not s or s in {"-", "none", "null"}:
+        return None
+
+    for fmt in (
+        "%A %d/%m/%Y %I:%M %p",
+        "%a %d/%m/%Y %I:%M %p",
+        "%d/%m/%Y %I:%M %p",
+        "%d/%m/%Y %H:%M",
+        "%d/%m/%Y",
+        "%Y-%m-%d",
+    ):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except Exception:
+            pass
+
+    # Fallback: pick the dd/mm/yyyy part out of a longer localized string.
+    m = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", s)
+    if m:
+        try:
+            day = int(m.group(1))
+            month = int(m.group(2))
+            year = int(m.group(3))
+            return date(year, month, day)
+        except Exception:
+            return None
+
+    return None
+
+
 def fetch_active_users() -> List[Dict[str, Any]]:
     try:
-        sb = get_supabase()
-        res = sb.table("users_accounts").select("id,username,password").execute()
-        return res.data or []
+        return fetch_all(
+            "SELECT id, username, password FROM users_accounts WHERE is_active = TRUE"
+        )
     except Exception:
-        logger.exception("Failed to fetch users from supabase")
+        logger.exception("Failed to fetch users from local postgres")
         return []
 
 
 def fetch_user_by_username(username: str, is_admin: bool = False) -> Optional[Dict[str, Any]]:
     try:
-        sb = get_supabase()
-        query = sb.table("users_accounts").select("id,username,password").eq("username", username)
-        if not is_admin:
-            query = query.eq("is_active", True)
-        res = query.single().execute()
-        return getattr(res, "data", None)
+        if is_admin:
+            return fetch_one(
+                "SELECT id, username, password FROM users_accounts WHERE username = %s LIMIT 1",
+                [username],
+            )
+        return fetch_one(
+            "SELECT id, username, password FROM users_accounts WHERE username = %s AND is_active = TRUE LIMIT 1",
+            [username],
+        )
     except Exception:
         logger.exception("Failed to fetch user %s", username)
         return None
 
 
 def save_account_data_rpc(user_id: int, account_data: Dict[str, Any]) -> bool:
-    sb = get_supabase()
-    if not sb:
-        logger.debug("No supabase client available to save account data for %s", user_id)
-        return False
+    plan_text = yemen_net.parse_plan_text(account_data.get("plan") or "").get_details().get("plan_id") or ""
+    logger.info(
+        "Saving account data for user_id=%s with plan=%s", user_id, plan_text
+    )
 
+    # Use the local PostgreSQL function to handle inserts/updates consistently.
     try:
-        plan_obj = yemen_net.parse_plan_text(account_data.get("plan") or "")
-    except Exception:
-        plan_obj = None
-    plan_id = plan_obj.get_details().get("plan_id") if plan_obj else None
-    
-    logger.info("Saving account data for user_id=%s with plan_id=%s", user_id, plan_id)
+        resp = call_function(
+            "insert_account_data_and_update_user_account",
+            {
+                "p_account_name": account_data.get("account_name"),
+                "p_user_id": user_id,
+                "p_available_balance": account_data.get("available_balance"),
+                "p_plan": plan_text,
+                "p_status": account_data.get("status"),
+                "p_expiry_date": account_data.get("expiry_date"),
+            },
+        )
 
-    payload = {
-        "p_account_name": account_data.get("account_name"),
-        "p_user_id": user_id,
-        "p_available_balance": account_data.get("available_balance"),
-        "p_plan": str(plan_id),
-        "p_status": account_data.get("status"),
-        "p_expiry_date": account_data.get("expiry_date"),
-    }
-
-    try:
-        result = sb.rpc("insert_account_data_and_update_user_account", payload).execute()
-        data = getattr(result, "data", None)
-        if data and isinstance(data, list) and len(data) > 0:
-            success = data[0].get("success", False)
-            message = data[0].get("message", "")
-            logger.info(f"RPC message for user_id={user_id}: {message}")
-            return bool(success)
-        logger.debug("Unexpected RPC response format for user_id=%s: %s", user_id, data)
+        logger.info("Saving account data: %s, %s, %s, %s, %s, %s", account_data.get("account_name"), user_id, account_data.get("available_balance"), plan_text, account_data.get("status"), account_data.get("expiry_date"))
+        data = getattr(resp, "data", None) or []
+        if data and isinstance(data[0], dict):
+            return bool(data[0].get("success"))
         return False
     except Exception:
-        logger.exception("Failed to call RPC for user_id=%s", user_id)
+        logger.exception("Failed to save account data for user_id=%s", user_id)
         return False
 
 
 def insert_log(user_id: int, result: str, details: str = None) -> None:
     try:
-        sb = get_supabase()
-        if not sb:
-            return
-        sb.table("logs").insert({"user_id": user_id, "result": result, "details": details}).execute()
+        execute(
+            "INSERT INTO logs (user_id, result, details, created_at) VALUES (%s, %s, %s, NOW())",
+            [user_id, result, details],
+        )
     except Exception:
-        logger.debug("Unable to write log to supabase", exc_info=True)
+        logger.debug("Unable to write log to local postgres", exc_info=True)

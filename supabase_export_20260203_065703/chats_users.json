@@ -1,0 +1,173 @@
+[
+  {
+    "id": 44,
+    "telegram_id": "633879665",
+    "user_name": "زيكووووووو",
+    "created_at": "2026-01-10T21:09:53.880714+00:00",
+    "receive_partnered_report": true,
+    "is_active": true,
+    "order_by": "usage"
+  },
+  {
+    "id": 73,
+    "telegram_id": "8460182682",
+    "user_name": "G",
+    "created_at": "2026-01-14T06:38:05.845329+00:00",
+    "receive_partnered_report": true,
+    "is_active": true,
+    "order_by": "adsl_number"
+  },
+  {
+    "id": 38,
+    "telegram_id": "1414870063",
+    "user_name": "ابو حسام",
+    "created_at": "2025-12-31T22:48:08.997938+00:00",
+    "receive_partnered_report": true,
+    "is_active": true,
+    "order_by": "usage"
+  },
+  {
+    "id": 21,
+    "telegram_id": "1134925276",
+    "user_name": "محمد الصلوي",
+    "created_at": "2025-12-27T03:26:41.77108+00:00",
+    "receive_partnered_report": true,
+    "is_active": false,
+    "order_by": "usage"
+  },
+  {
+    "id": 20,
+    "telegram_id": "1275080376",
+    "user_name": "امجد النميلي",
+    "created_at": "2025-12-27T03:25:59.653285+00:00",
+    "receive_partnered_report": true,
+    "is_active": true,
+    "order_by": "adsl_order_index"
+  },
+  {
+    "id": 74,
+    "telegram_id": "323703305",
+    "user_name": "Nahda",
+    "created_at": "2026-01-22T22:20:08.698707+00:00",
+    "receive_partnered_report": true,
+    "is_active": true,
+    "order_by": "usage"
+  },
+  {
+    "id": 75,
+    "telegram_id": "1467816329",
+    "user_name": "احمد واصل",
+    "created_at": "2026-01-25T02:56:26.970077+00:00",
+    "receive_partnered_report": true,
+    "is_active": true,
+    "order_by": "usage"
+  },
+  {
+    "id": 19,
+    "telegram_id": "1568968335",
+    "user_name": "عماد النميلي",
+    "created_at": "2025-12-27T03:25:20.45539+00:00",
+    "receive_partnered_report": true,
+    "is_active": true,
+    "order_by": "adsl_order_index"
+  },
+  {
+    "id": 40,
+    "telegram_id": "6170005721",
+    "user_name": "014077450",
+    "created_at": "2026-01-09T00:46:39.71913+00:00",
+    "receive_partnered_report": false,
+    "is_active": true,
+    "order_by": "usage"
+  },
+  {
+    "id": 18,
+    "telegram_id": "8293766087",
+    "user_name": "عبداللة النميلي",
+    "created_at": "2025-12-27T03:24:32.322931+00:00",
+    "receive_partnered_report": false,
+    "is_active": true,
+    "order_by": "adsl_order_index"
+  },
+  {
+    "id": 76,
+    "telegram_id": "6004676279",
+    "user_name": "طه النميلي",
+    "created_at": "2026-02-02T04:06:03.254711+00:00",
+    "receive_partnered_report": true,
+    "is_active": false,
+    "order_by": "usage"
+  },
+  {
+    "id": 25,
+    "telegram_id": "1520789046",
+    "user_name": "ابو ارسلان",
+    "created_at": "2025-12-28T01:27:23.598461+00:00",
+    "receive_partnered_report": true,
+    "is_active": true,
+    "order_by": "usage"
+  },
+  {
+    "id": 37,
+    "telegram_id": "7261692308",
+    "user_name": "اويس شبكة 4g",
+    "created_at": "2025-12-31T22:48:01.428162+00:00",
+    "receive_partnered_report": true,
+    "is_active": true,
+    "order_by": "usage"
+  },
+  {
+    "id": 39,
+    "telegram_id": "2019418118",
+    "user_name": "عزام عبدالله",
+    "created_at": "2026-01-07T16:59:23.364011+00:00",
+    "receive_partnered_report": true,
+    "is_active": true,
+    "order_by": "usage"
+  },
+  {
+    "id": 36,
+    "telegram_id": "662243823",
+    "user_name": "ابو أمجد",
+    "created_at": "2025-12-31T03:21:05.785534+00:00",
+    "receive_partnered_report": false,
+    "is_active": true,
+    "order_by": "usage"
+  },
+  {
+    "id": 41,
+    "telegram_id": "491067862",
+    "user_name": "أنعم",
+    "created_at": "2026-01-09T01:53:14.557374+00:00",
+    "receive_partnered_report": true,
+    "is_active": true,
+    "order_by": "usage"
+  },
+  {
+    "id": 42,
+    "telegram_id": "5986980948",
+    "user_name": "Abdulmalik Alhaj",
+    "created_at": "2026-01-09T21:02:12.761236+00:00",
+    "receive_partnered_report": true,
+    "is_active": true,
+    "order_by": "usage"
+  },
+  {
+    "id": 22,
+    "telegram_id": "1091397374",
+    "user_name": "ايمن الصبري",
+    "created_at": "2025-12-27T03:28:18.575849+00:00",
+    "receive_partnered_report": true,
+    "is_active": true,
+    "order_by": "usage"
+  },
+  {
+    "id": 58,
+    "telegram_id": "5605423523",
+    "user_name": "شهاب",
+    "created_at": "2026-01-14T02:01:03.636088+00:00",
+    "receive_partnered_report": true,
+    "is_active": true,
+    "order_by": "usage"
+  }
+]

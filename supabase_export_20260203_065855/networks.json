@@ -1,0 +1,254 @@
+[
+  {
+    "id": 132,
+    "network_name": "كلية الحاسوب",
+    "created_at": "2026-01-22T20:16:51.538711+00:00",
+    "is_active": false,
+    "expiration_date": null
+  },
+  {
+    "id": 133,
+    "network_name": "NAHDA",
+    "created_at": "2026-01-22T22:20:09.177476+00:00",
+    "is_active": true,
+    "expiration_date": null
+  },
+  {
+    "id": 134,
+    "network_name": "حقي",
+    "created_at": "2026-01-25T02:56:27.587542+00:00",
+    "is_active": true,
+    "expiration_date": "2026-07-24"
+  },
+  {
+    "id": 135,
+    "network_name": "حقي",
+    "created_at": "2026-01-25T02:58:58.350049+00:00",
+    "is_active": false,
+    "expiration_date": null
+  },
+  {
+    "id": 136,
+    "network_name": "طه النميلي",
+    "created_at": "2026-02-02T04:06:03.604455+00:00",
+    "is_active": false,
+    "expiration_date": null
+  },
+  {
+    "id": 107,
+    "network_name": "سبا",
+    "created_at": "2026-01-14T02:01:03.902667+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 81,
+    "network_name": "nigga",
+    "created_at": "2026-01-10T21:09:54.178591+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 20,
+    "network_name": "ايمن الصبري",
+    "created_at": "2025-12-27T03:32:14.107772+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 124,
+    "network_name": "Ghost",
+    "created_at": "2026-01-14T07:28:53.738794+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 123,
+    "network_name": "Y",
+    "created_at": "2026-01-14T06:38:06.132962+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 125,
+    "network_name": "G h",
+    "created_at": "2026-01-14T07:33:03.422965+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 122,
+    "network_name": "H",
+    "created_at": "2026-01-14T06:29:53.266564+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 16,
+    "network_name": "خطوط dsl",
+    "created_at": "2025-12-27T03:32:14.107772+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 51,
+    "network_name": "علي",
+    "created_at": "2025-12-30T18:05:55.158557+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 50,
+    "network_name": "Secret",
+    "created_at": "2025-12-30T18:05:32.825651+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 49,
+    "network_name": "شبكة سلام",
+    "created_at": "2025-12-30T18:04:22.964677+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 75,
+    "network_name": "صنعاء نت",
+    "created_at": "2026-01-07T16:59:23.682976+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 63,
+    "network_name": "شبكة 4g",
+    "created_at": "2025-12-31T22:48:01.717152+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 78,
+    "network_name": "شبكه هلا",
+    "created_at": "2026-01-09T00:51:25.477951+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 72,
+    "network_name": "شبكه سام",
+    "created_at": "2026-01-02T00:13:33.924595+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 79,
+    "network_name": "التعاون نت",
+    "created_at": "2026-01-09T21:02:13.090919+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 80,
+    "network_name": "التعاون نت",
+    "created_at": "2026-01-09T23:26:13.60653+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 29,
+    "network_name": "شبكة سام - آزال",
+    "created_at": "2025-12-28T01:27:26.859977+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 65,
+    "network_name": "شبكة سبأ",
+    "created_at": "2025-12-31T23:29:01.349919+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 54,
+    "network_name": "شبكه نبأ",
+    "created_at": "2025-12-30T18:23:59.448535+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 53,
+    "network_name": "شبكه فور جي",
+    "created_at": "2025-12-30T18:21:31.78341+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 121,
+    "network_name": "هي",
+    "created_at": "2026-01-14T06:13:40.040666+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 128,
+    "network_name": "Xi",
+    "created_at": "2026-01-15T05:27:03.353194+00:00",
+    "is_active": true,
+    "expiration_date": "2026-02-15"
+  },
+  {
+    "id": 129,
+    "network_name": "Each",
+    "created_at": "2026-01-15T05:30:38.236079+00:00",
+    "is_active": false,
+    "expiration_date": null
+  },
+  {
+    "id": 130,
+    "network_name": "TX hhs",
+    "created_at": "2026-01-15T05:55:26.04265+00:00",
+    "is_active": false,
+    "expiration_date": null
+  },
+  {
+    "id": 18,
+    "network_name": "كلاسيك نت",
+    "created_at": "2025-12-27T03:32:14.107772+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 131,
+    "network_name": "على",
+    "created_at": "2026-01-21T02:56:44.556642+00:00",
+    "is_active": false,
+    "expiration_date": null
+  },
+  {
+    "id": 42,
+    "network_name": "كليه الحاسوب",
+    "created_at": "2025-12-29T05:29:43.482164+00:00",
+    "is_active": true,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 19,
+    "network_name": "محمد الصلوي",
+    "created_at": "2025-12-27T03:32:14.107772+00:00",
+    "is_active": false,
+    "expiration_date": "2026-04-01"
+  },
+  {
+    "id": 127,
+    "network_name": "HSBC",
+    "created_at": "2026-01-15T05:24:31.792565+00:00",
+    "is_active": true,
+    "expiration_date": null
+  },
+  {
+    "id": 126,
+    "network_name": "TX",
+    "created_at": "2026-01-15T05:18:25.732189+00:00",
+    "is_active": true,
+    "expiration_date": null
+  }
+]

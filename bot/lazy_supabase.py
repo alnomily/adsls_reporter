@@ -1,24 +1,19 @@
-from typing import Any
-from config import SUPABASE_URL, SUPABASE_KEY
+"""Legacy Supabase client (deprecated).
+
+This project has been migrated to local PostgreSQL. This module remains only so
+any stale imports fail fast with a clear message, without requiring the
+`supabase` package.
+"""
+
 
 class LazySupabase:
-    def __init__(self):
-        self._client = None
-
-    def _init_client(self):
-        if self._client is None:
-            from supabase import create_client
-            self._client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        return self._client
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._init_client(), name)
+    def __getattr__(self, name: str):
+        raise RuntimeError(
+            "Supabase has been removed from this project. Use local PostgreSQL helpers instead."
+        )
 
     def reset(self):
-        """Force re-initialization of the Supabase client on next use."""
-        try:
-            self._client = None
-        except Exception:
-            self._client = None
+        return None
+
 
 supabase = LazySupabase()

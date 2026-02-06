@@ -1,0 +1,194 @@
+[
+  {
+    "id": "0a55211d-1eed-4fe5-b77d-e35183d957da",
+    "token_id": "1275080376",
+    "request_text": "012822:1828338",
+    "status": "rejected",
+    "created_at": "2025-10-19T00:19:50.198405",
+    "admin_response": null
+  },
+  {
+    "id": "5047ca05-6320-40cf-9c07-414d818d7d69",
+    "token_id": "1275080376",
+    "request_text": "012822:1828338",
+    "status": "approved",
+    "created_at": "2025-10-19T00:19:58.376119",
+    "admin_response": null
+  },
+  {
+    "id": "425d3826-0157-443e-84b3-3ae3a5bad2ee",
+    "token_id": "1091397374",
+    "request_text": "01335755:335755",
+    "status": "rejected",
+    "created_at": "2025-10-19T00:48:11.633257",
+    "admin_response": null
+  },
+  {
+    "id": "d3c3b452-4bae-44e1-9392-ba8e53f357b3",
+    "token_id": "1091397374",
+    "request_text": "01335755:1335755",
+    "status": "approved",
+    "created_at": "2025-10-19T01:04:25.234713",
+    "admin_response": null
+  },
+  {
+    "id": "f1fb5a0d-bc2f-4796-b23f-753722e59e69",
+    "token_id": "8460182682",
+    "request_text": "0174737:66262",
+    "status": "pending",
+    "created_at": "2025-10-22T23:41:58.320205",
+    "admin_response": null
+  },
+  {
+    "id": "45d00ff2-92fd-48dc-ba09-7730dfe694e4",
+    "token_id": "1568968335",
+    "request_text": "01577568:577568",
+    "status": "approved",
+    "created_at": "2025-10-23T01:41:00.488656",
+    "admin_response": null
+  },
+  {
+    "id": "2aed25d5-ae56-4d1d-ab93-ae830f6ab253",
+    "token_id": "1568968335",
+    "request_text": "01478743:1478743",
+    "status": "approved",
+    "created_at": "2025-10-23T01:41:45.556857",
+    "admin_response": null
+  },
+  {
+    "id": "83c4d23f-4bd2-47da-bb3d-cd33c297ba45",
+    "token_id": "1568968335",
+    "request_text": "01479752:1479752 01478743:1478743",
+    "status": "approved",
+    "created_at": "2025-10-23T01:46:47.345342",
+    "admin_response": null
+  },
+  {
+    "id": "194a85ff-fa71-42ea-aaab-54b6211a409a",
+    "token_id": "1568968335",
+    "request_text": "01479938:1479938 01465718:1465718",
+    "status": "approved",
+    "created_at": "2025-10-27T21:55:53.137078",
+    "admin_response": null
+  },
+  {
+    "id": "80b3f143-f2c7-4889-94f1-9a1eb0477c52",
+    "token_id": "1134925276",
+    "request_text": "01548389:1548389",
+    "status": "approved",
+    "created_at": "2025-10-28T18:17:51.208582",
+    "admin_response": null
+  },
+  {
+    "id": "95932cfb-a50d-47cd-bc58-f5894d127ddc",
+    "token_id": "1568968335",
+    "request_text": "01467419:467419",
+    "status": "approved",
+    "created_at": "2025-10-29T04:23:34.85806",
+    "admin_response": null
+  },
+  {
+    "id": "c6954300-5d5a-4532-8b04-6f90250415dd",
+    "token_id": "1091397374",
+    "request_text": "01335755:1335755",
+    "status": "approved",
+    "created_at": "2025-10-30T02:26:29.029574",
+    "admin_response": null
+  },
+  {
+    "id": "93061a69-7a85-4503-9e70-c9e5d968cb18",
+    "token_id": "1568968335",
+    "request_text": "01467421:467421",
+    "status": "pending",
+    "created_at": "2025-10-31T05:19:43.569911",
+    "admin_response": null
+  },
+  {
+    "id": "52a51293-b992-4e42-a8bb-1e1fc7816814",
+    "token_id": "1568968335",
+    "request_text": "01467421:467421",
+    "status": "approved",
+    "created_at": "2025-10-31T05:25:04.6236",
+    "admin_response": null
+  },
+  {
+    "id": "9db0db76-f4dd-4147-bb1b-6931bbc6faa9",
+    "token_id": "1568968335",
+    "request_text": "01467421:467421",
+    "status": "approved",
+    "created_at": "2025-10-31T05:26:40.077872",
+    "admin_response": null
+  },
+  {
+    "id": "1dabe552-0718-4834-8dc5-b775e1972bf9",
+    "token_id": "1568968335",
+    "request_text": "01467419:467419",
+    "status": "pending",
+    "created_at": "2025-10-31T06:49:54.683683",
+    "admin_response": null
+  },
+  {
+    "id": "2a3e0bf8-c0f6-45c1-afe9-59becb52adff",
+    "token_id": "1568968335",
+    "request_text": "01467419:467419",
+    "status": "approved",
+    "created_at": "2025-10-31T07:06:13.234263",
+    "admin_response": null
+  },
+  {
+    "id": "16900818-7f79-41d9-a06c-3ba69c7fdcdb",
+    "token_id": "1568968335",
+    "request_text": "1479183:محمد",
+    "status": "approved",
+    "created_at": "2025-11-20T20:27:05.512264",
+    "admin_response": null
+  },
+  {
+    "id": "64617dca-a1aa-4f84-98ce-f8ee346f625f",
+    "token_id": "1568968335",
+    "request_text": "محمد:1479183",
+    "status": "approved",
+    "created_at": "2025-11-20T20:44:07.660089",
+    "admin_response": null
+  },
+  {
+    "id": "1db3207d-3199-42d6-8010-d588071c8ac2",
+    "token_id": "1134925276",
+    "request_text": "01305998:2",
+    "status": "approved",
+    "created_at": "2025-11-22T14:47:46.150154",
+    "admin_response": null
+  },
+  {
+    "id": "e2b1fc1d-2ca7-4399-9895-5ecf9ded3e03",
+    "token_id": "1134925276",
+    "request_text": "1305998:1305998",
+    "status": "approved",
+    "created_at": "2025-11-24T09:06:47.570922",
+    "admin_response": null
+  },
+  {
+    "id": "62a9f2a5-ad0b-4036-96af-6c12eabb7d01",
+    "token_id": "7002366806",
+    "request_text": "04246283:Mohammed",
+    "status": "pending",
+    "created_at": "2025-12-10T01:45:31.085083",
+    "admin_response": null
+  },
+  {
+    "id": "adadcd7c-3084-4489-9152-4aa34b7f61f7",
+    "token_id": "1275080376",
+    "request_text": "01478459:1478459",
+    "status": "approved",
+    "created_at": "2025-12-25T09:52:23.504571",
+    "admin_response": null
+  },
+  {
+    "id": "28ae6fe9-ac25-4362-853d-6a51755c15ed",
+    "token_id": "1275080376",
+    "request_text": "1478459:1478459",
+    "status": "approved",
+    "created_at": "2025-12-25T10:17:18.893696",
+    "admin_response": null
+  }
+]

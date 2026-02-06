@@ -1592,7 +1592,7 @@ def _has_pending_request(chat_id) -> bool:
 
 
 def _extract_network_id(network_resp: Any) -> Optional[int]:
-    """Best-effort extractor for network id from various supabase responses."""
+    """Best-effort extractor for network id from various DB response shapes."""
     data = getattr(network_resp, "data", None)
     if isinstance(data, list) and data and isinstance(data[0], dict):
         return data[0].get("id") or data[0].get("network_id")

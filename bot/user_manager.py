@@ -165,7 +165,10 @@ class UserManager:
         try:
             resp = await get_available_report_dates(user_ids, limit)
             data = getattr(resp, "data", None) or []
+            logger.info("get_available_report_dates fetched %d records for user_ids %s", len(data), user_ids)
+            logger.info("get_available_report_dates raw data: %s", data)
             dates = [row.get("report_date") for row in data if row.get("report_date")]
+            logger.info("get_available_report_dates extracted dates: %s", dates)
             return sorted(set(dates), reverse=True)
         except Exception as e:
             logger.error(f"get_available_report_dates error for user_ids {user_ids}: {e}")
