@@ -1,5 +1,7 @@
 import asyncio
+import json
 import logging
+import os
 from functools import partial
 from typing import Any, Callable, Dict, Optional
 
@@ -12,6 +14,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 
 from bot.local_postgres import (
     DBResponse,
+    call_function,
     count_table as pg_count_table,
     execute,
     fetch_all,
@@ -42,6 +45,55 @@ def _sync_insert_pending(network_id: str, request_text: str):
     row = insert_returning_one(
         'INSERT INTO pending_requests (token_id, request_text, status) VALUES (%s, %s, %s) RETURNING *',
         [network_id, request_text, 'pending'],
+    )
+    return DBResponse(data=[row] if row else [])
+
+
+def _sync_insert_pending_v2(
+    request_type: str,
+    payload: dict,
+    requester_telegram_id: Optional[str] = None,
+    network_id: Optional[int] = None,
+):
+    token_id = requester_telegram_id or (payload or {}).get("telegram_id") or ""
+    request_text = (payload or {}).get("request_text") or ""
+    row = insert_returning_one(
+        """
+        INSERT INTO pending_requests
+            (token_id, request_text, request_type, request_payload, status, requester_telegram_id, network_id)
+        VALUES
+            (%s, %s, %s, %s::jsonb, %s, %s, %s)
+        RETURNING *
+        """.strip(),
+        [
+            str(token_id),
+            request_text,
+            request_type,
+            json.dumps(payload or {}),
+            "pending",
+            requester_telegram_id,
+            network_id,
+        ],
+    )
+    return DBResponse(data=[row] if row else [])
+
+
+def _sync_insert_payment(
+    payer_chat_user_id: int,
+    network_id: int,
+    amount: int,
+    period_months: int,
+    payment_method: Optional[str] = None,
+):
+    row = insert_returning_one(
+        """
+        INSERT INTO payments
+            (payer_chat_user_id, network_id, amount, period_months, payment_method)
+        VALUES
+            (%s, %s, %s, %s, %s)
+        RETURNING *
+        """.strip(),
+        [payer_chat_user_id, network_id, amount, period_months, payment_method],
     )
     return DBResponse(data=[row] if row else [])
 
@@ -217,8 +269,21 @@ def _sync_get_adsl_order_index(id: str):
     return DBResponse(data=row or {})
 
 def _sync_update_adsl_order_index(id: str, order_index: int):
-    execute('UPDATE users_accounts SET order_index = %s WHERE id = %s', [order_index, id])
-    return {"success": True}
+    try:
+        return call_function(
+            "change_user_account_order_index",
+            {"p_id": id, "p_order_index": order_index},
+            param_types={"p_id": "uuid", "p_order_index": "int4"},
+        )
+    except Exception:
+        # Fallback if the RPC isn't present in this DB.
+        execute(
+            "UPDATE users_accounts SET order_index = %s WHERE id = %s",
+            [order_index, id],
+        )
+        return DBResponse(
+            data=[{"success": True, "message": "order_index updated"}]
+        )
 
 def _sync_add_network_partner(network_id: int, chat_user_id: int, permissions: int | str | None = 1):
     """
@@ -438,39 +503,23 @@ def _sync_create_chat_user(telegram_id: str, user_name: str):
     return DBResponse(data=[row] if row else [])
 
 def _sync_create_network(chat_user_id: int, network_name: str):
-    # Create base network
-    network_row = insert_returning_one(
-        'INSERT INTO networks (network_name, is_active) VALUES (%s, TRUE) RETURNING id',
-        [network_name],
+    return call_function(
+        "create_network_for_chat_user",
+        {
+            "p_chat_user_id": chat_user_id,
+            "p_network_name": network_name,
+        },
     )
-    network_id = (network_row or {}).get('id')
-    if not network_id:
-        return DBResponse(data=[])
-
-    # Ensure an owner chat-network mapping exists and becomes selected
-    execute('UPDATE chats_networks SET is_selected_network = FALSE WHERE chat_user_id = %s', [chat_user_id])
-    insert_returning_one(
-        """INSERT INTO chats_networks (network_id, chat_user_id, network_type, permissions, is_active, is_selected_network)
-            VALUES (%s, %s, 'owner', 'owner', TRUE, TRUE)
-            RETURNING id""",
-    [network_id, chat_user_id],
-)
-    return DBResponse(data=[{"id": int(network_id)}])
 
 def _sync_remove_network(network_id: int):
     execute('DELETE FROM networks WHERE id = %s', [network_id])
     return DBResponse(data=[])
 
 def _sync_active_network(network_id: int):
-    execute('UPDATE networks SET is_active = TRUE WHERE id = %s', [network_id])
-    # Also activate the owner mapping if present
-    execute("UPDATE chats_networks SET is_active = TRUE WHERE network_id = %s AND network_type = 'owner'", [network_id])
-    return {"success": True}
+    return call_function("activate_network", {"p_network_id": network_id})
 
 def _sync_deactivate_network(network_id: int):
-    execute('UPDATE networks SET is_active = FALSE WHERE id = %s', [network_id])
-    execute("UPDATE chats_networks SET is_active = FALSE WHERE network_id = %s AND network_type = 'owner'", [network_id])
-    return {"success": True}
+    return call_function("deactive_network", {"p_network_id": network_id})
 
 def _sync_get_network_by_id(chat_network_id: int):
     row = fetch_one('SELECT * FROM networks_details WHERE id = %s LIMIT 1', [chat_network_id])
@@ -492,40 +541,55 @@ def _sync_update_chat_user(telegram_id: str, user_name: str):
     return DBResponse(data=[])
 
 def _sync_update_network(chat_network_id: int, network_name: str, times_to_send_reports: int):
-    net = fetch_one('SELECT network_id FROM chats_networks WHERE id = %s LIMIT 1', [chat_network_id])
-    network_id = (net or {}).get('network_id')
-    if network_id is not None:
-        execute('UPDATE networks SET network_name = %s WHERE id = %s', [network_name, network_id])
-    execute('UPDATE chats_networks SET times_to_send_reports = %s WHERE id = %s', [times_to_send_reports, chat_network_id])
-    return {"success": True}
+    try:
+        return call_function(
+            "update_chat_network",
+            {
+                "p_chat_network_id": chat_network_id,
+                "p_network_name": network_name,
+                "p_times_to_send_reports": times_to_send_reports,
+            },
+            param_types={
+                "p_chat_network_id": "int4",
+                "p_network_name": "text",
+                "p_times_to_send_reports": "int4",
+            },
+        )
+    except Exception:
+        execute(
+            "UPDATE chats_networks SET network_name = %s, times_to_send_reports = %s WHERE id = %s",
+            [network_name, times_to_send_reports, chat_network_id],
+        )
+        return DBResponse(data=[{"success": True, "message": "chat_network updated"}])
 
 def _sync_change_chat_networks_times_to_send_reports(chat_network_id: int, times_to_send_reports: int):
-    execute('UPDATE chats_networks SET times_to_send_reports = %s WHERE id = %s', [times_to_send_reports, chat_network_id])
-    return {"success": True}
-def _sync_change_warning_and_danger_settings(chat_network_id: int, warning_count_remaining_days: int, danger_count_remaining_days: int, warning_percentage_remaining_balance: int, danger_percentage_remaining_balance: int):
-    execute(
-        'UPDATE chats_networks SET warning_count_remaining_days = %s, danger_count_remaining_days = %s, '
-        'warning_percentage_remaining_balance = %s, danger_percentage_remaining_balance = %s '
-        'WHERE id = %s',
-        [
-            warning_count_remaining_days,
-            danger_count_remaining_days,
-            warning_percentage_remaining_balance,
-            danger_percentage_remaining_balance,
-            chat_network_id,
-        ],
+    return call_function(
+        "update_chat_network_times_to_send_reports",
+        {
+            "p_chat_network_id": chat_network_id,
+            "p_times_to_send_reports": times_to_send_reports,
+        },
     )
-    return {"success": True}
+def _sync_change_warning_and_danger_settings(chat_network_id: int, warning_count_remaining_days: int, danger_count_remaining_days: int, warning_percentage_remaining_balance: int, danger_percentage_remaining_balance: int):
+    return call_function(
+        "update_chat_network_warning_and_danger_settings",
+        {
+            "p_chat_network_id": chat_network_id,
+            "p_warning_count_remaining_days": warning_count_remaining_days,
+            "p_danger_count_remaining_days": danger_count_remaining_days,
+            "p_warning_percentage_remaining_balance": warning_percentage_remaining_balance,
+            "p_danger_percentage_remaining_balance": danger_percentage_remaining_balance,
+        },
+    )
 
 def _sync_set_selected_network(chat_network_id: int, chat_user_id: int):
-    # Unselect all networks for this chat_user
-    execute('UPDATE chats_networks SET is_selected_network = FALSE WHERE chat_user_id = %s', [chat_user_id])
-    # Select requested network
-    execute(
-        'UPDATE chats_networks SET is_selected_network = TRUE WHERE id = %s AND chat_user_id = %s',
-        [chat_network_id, chat_user_id],
+    return call_function(
+        "set_selected_network",
+        {
+            "p_network_id": chat_network_id,
+            "p_chat_user_id": chat_user_id,
+        },
     )
-    return {"success": True}
 
 
 def _sync_get_selected_network(telegram_id: str):
@@ -550,41 +614,36 @@ def _sync_get_all_tokens():
 def _sync_approve_registration(
     users_ids: list,
     telegram_id: str,
-    network_id: int,
     payer_chat_user_id: int,
+    network_id: int,
     expiration_date: str,
     amount: int,
     payment_method: str,
 ):
-    # Minimal local implementation:
-    # - activate chat user
-    # - mark network active and set expiration_date
-    # - (optional) record payment if the table exists
-
-    execute('UPDATE chats_users SET is_active = TRUE WHERE telegram_id = %s', [str(telegram_id)])
-
-    try:
-        execute('UPDATE networks SET is_active = TRUE, expiration_date = %s WHERE id = %s', [expiration_date, network_id])
-    except Exception:
-        # If networks table doesn't have expiration_date, ignore.
-        execute('UPDATE networks SET is_active = TRUE WHERE id = %s', [network_id])
-
-    # Best-effort payment recording (does nothing if the table is absent)
-    try:
-        insert_returning_one(
-            """INSERT INTO payments (network_id, payer_chat_user_id, amount, payment_method, expiration_date)
-               VALUES (%s, %s, %s, %s, %s)
-               RETURNING id""",
-            [network_id, payer_chat_user_id, amount, payment_method, expiration_date],
-        )
-    except Exception:
-        pass
-
-    return {"success": True}
+    return call_function(
+        "approve_registration",
+        {
+            "p_users_ids": users_ids,
+            "p_telegram_id": telegram_id,
+            "p_payer_chat_user_id": payer_chat_user_id,
+            "p_network_id": network_id,
+            "p_expiration_date": expiration_date,
+            "p_amount": amount,
+            "p_payment_method": payment_method,
+        },
+        param_types={
+            "p_users_ids": "uuid[]",
+            "p_telegram_id": "text",
+            "p_expiration_date": "date",
+            "p_payment_method": "text",
+        },
+    )
 
 def _sync_change_order_by(telegram_id: str, order_by: str):
-    execute('UPDATE chats_users SET order_by = %s WHERE telegram_id = %s', [order_by, str(telegram_id)])
-    return {"success": True}
+    return call_function(
+        "change_chat_user_order_by",
+        {"p_telegram_id": telegram_id, "p_order_by": order_by},
+    )
 
 async def count_table(tbl: str, filter_column: Optional[str] = None, filter_value: Optional[Any] = None):
     return await run_blocking(partial(_sync_count_table, tbl, filter_column, filter_value))
@@ -602,18 +661,198 @@ async def insert_pending_request(network_id: str, request_text: str):
     return await run_blocking(partial(_sync_insert_pending, network_id, request_text))
 
 
+async def insert_pending_request_v2(
+    request_type: str,
+    payload: dict,
+    requester_telegram_id: Optional[str] = None,
+    network_id: Optional[int] = None,
+):
+    return await run_blocking(
+        partial(
+            _sync_insert_pending_v2,
+            request_type,
+            payload,
+            requester_telegram_id,
+            network_id,
+        )
+    )
+
+
+async def insert_payment(
+    payer_chat_user_id: int,
+    network_id: int,
+    amount: int,
+    period_months: int,
+    payment_method: Optional[str] = None,
+):
+    return await run_blocking(
+        partial(
+            _sync_insert_payment,
+            payer_chat_user_id,
+            network_id,
+            amount,
+            period_months,
+            payment_method,
+        )
+    )
+
+
 def _sync_get_pending(req_id: str):
     row = fetch_one('SELECT * FROM pending_requests WHERE id = %s LIMIT 1', [req_id])
     return DBResponse(data=row or {})
 
 
+def _sync_get_pending_requests(
+    status: Optional[str] = "pending",
+    request_type: Optional[str] = None,
+    limit: int = 20,
+    offset: int = 0,
+):
+    clauses = []
+    params: list[Any] = []
+
+    if status and status != "all":
+        clauses.append("status = %s")
+        params.append(status)
+
+    if request_type and request_type != "all":
+        if request_type == "network":
+            clauses.append("request_type = %s")
+            params.append("network_add")
+        elif request_type == "adsl":
+            clauses.append("request_type = ANY(%s::text[])")
+            params.append(["adsl_add", "adsl_add_with_names"])
+        else:
+            clauses.append("request_type = %s")
+            params.append(request_type)
+
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    query = f"SELECT * FROM pending_requests {where_sql} ORDER BY created_at DESC LIMIT %s OFFSET %s"
+    params.extend([limit, offset])
+    rows = fetch_all(query, params)
+    return DBResponse(data=rows)
+
+
+def _sync_count_pending_requests(status: Optional[str] = "pending", request_type: Optional[str] = None) -> int:
+    clauses = []
+    params: list[Any] = []
+
+    if status and status != "all":
+        clauses.append("status = %s")
+        params.append(status)
+
+    if request_type and request_type != "all":
+        if request_type == "network":
+            clauses.append("request_type = %s")
+            params.append("network_add")
+        elif request_type == "adsl":
+            clauses.append("request_type = ANY(%s::text[])")
+            params.append(["adsl_add", "adsl_add_with_names"])
+        else:
+            clauses.append("request_type = %s")
+            params.append(request_type)
+
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    query = f"SELECT COUNT(*) FROM pending_requests {where_sql}"
+    return int(fetch_value(query, params) or 0)
+
+
 def _sync_update_pending(req_id: str, status: str):
-    execute('UPDATE pending_requests SET status = %s WHERE id = %s', [status, req_id])
-    return DBResponse(data=[])
+    row = fetch_one(
+        'UPDATE pending_requests SET status = %s, updated_at = NOW() WHERE id = %s RETURNING *',
+        [status, req_id],
+    )
+    return DBResponse(data=[row] if row else [])
+
+
+def _sync_update_pending_admin_msgs(req_id: str, admin_msgs: dict) -> DBResponse:
+    row = fetch_one(
+        """
+        UPDATE pending_requests
+           SET request_payload = jsonb_set(
+               COALESCE(request_payload, '{}'::jsonb),
+               '{admin_msgs}',
+               %s::jsonb,
+               true
+           )
+         WHERE id = %s
+        RETURNING *
+        """.strip(),
+        [json.dumps(admin_msgs or {}), req_id],
+    )
+    return DBResponse(data=[row] if row else [])
+
+
+def _sync_update_pending_latest_for_requester(telegram_id: str, status: str):
+    row = fetch_one(
+        """
+        UPDATE pending_requests
+           SET status = %s, updated_at = NOW()
+         WHERE id = (
+               SELECT id
+                 FROM pending_requests
+                WHERE requester_telegram_id = %s
+                  AND status = 'pending'
+                ORDER BY created_at DESC
+                LIMIT 1
+         )
+        RETURNING *
+        """.strip(),
+        [status, telegram_id],
+    )
+    return DBResponse(data=[row] if row else [])
+
+
+def _sync_has_pending_request(requester_telegram_id: str, request_types: Optional[list[str]] = None) -> bool:
+    clauses = ["requester_telegram_id = %s", "status = 'pending'"]
+    params: list[Any] = [requester_telegram_id]
+
+    if request_types:
+        clauses.append("request_type = ANY(%s::text[])")
+        params.append(request_types)
+
+    where_sql = " AND ".join(clauses)
+    query = f"SELECT 1 FROM pending_requests WHERE {where_sql} LIMIT 1"
+    return bool(fetch_value(query, params))
+
+
+def _sync_get_pending_requests_for_requester(
+    requester_telegram_id: str,
+    request_types: Optional[list[str]] = None,
+    network_id: Optional[int] = None,
+):
+    clauses = ["requester_telegram_id = %s", "status = 'pending'"]
+    params: list[Any] = [requester_telegram_id]
+
+    if request_types:
+        clauses.append("request_type = ANY(%s::text[])")
+        params.append(request_types)
+
+    if network_id is not None:
+        clauses.append("network_id = %s")
+        params.append(network_id)
+
+    where_sql = " AND ".join(clauses)
+    query = f"SELECT * FROM pending_requests WHERE {where_sql} ORDER BY created_at DESC"
+    rows = fetch_all(query, params)
+    return DBResponse(data=rows)
 
 
 async def get_pending_request(req_id: str):
     return await run_blocking(partial(_sync_get_pending, req_id))
+
+
+async def get_pending_requests(
+    status: Optional[str] = "pending",
+    request_type: Optional[str] = None,
+    limit: int = 20,
+    offset: int = 0,
+):
+    return await run_blocking(partial(_sync_get_pending_requests, status, request_type, limit, offset))
+
+
+async def count_pending_requests(status: Optional[str] = "pending", request_type: Optional[str] = None):
+    return await run_blocking(partial(_sync_count_pending_requests, status, request_type))
 
 
 async def get_request_by_id(req_id: str):
@@ -649,6 +888,28 @@ async def get_request_by_id(req_id: str):
 
 async def update_pending_status(req_id: str, status: str):
     return await run_blocking(partial(_sync_update_pending, req_id, status))
+
+
+async def update_pending_admin_msgs(req_id: str, admin_msgs: dict):
+    return await run_blocking(partial(_sync_update_pending_admin_msgs, req_id, admin_msgs))
+
+
+async def update_pending_status_latest_for_requester(telegram_id: str, status: str):
+    return await run_blocking(partial(_sync_update_pending_latest_for_requester, telegram_id, status))
+
+
+async def has_pending_request(requester_telegram_id: str, request_types: Optional[list[str]] = None) -> bool:
+    return await run_blocking(partial(_sync_has_pending_request, requester_telegram_id, request_types))
+
+
+async def get_pending_requests_for_requester(
+    requester_telegram_id: str,
+    request_types: Optional[list[str]] = None,
+    network_id: Optional[int] = None,
+):
+    return await run_blocking(
+        partial(_sync_get_pending_requests_for_requester, requester_telegram_id, request_types, network_id)
+    )
 
 
 async def user_exists(username: str):
@@ -817,8 +1078,8 @@ async def deactivate_network(network_id: int):
 async def approve_registration(
     users_ids: list,
     telegram_id: str,
-    network_id: int,
     payer_chat_user_id: int,
+    network_id: int,
     expiration_date: str,
     amount: int,
     payment_method: str,
@@ -828,8 +1089,8 @@ async def approve_registration(
             _sync_approve_registration,
             users_ids,
             telegram_id,
-            network_id,
             payer_chat_user_id,
+            network_id,
             expiration_date,
             amount,
             payment_method,
@@ -869,6 +1130,9 @@ def sync_users_exists(adsls: list):
     return _sync_users_exists(adsls)
 
 logger = logging.getLogger("YemenNetBot.utils_shared")
+SCRAPE_LOCK_TIMEOUT_SECONDS = int(os.getenv("SCRAPE_LOCK_TIMEOUT_SECONDS", "90"))
+_scrape_locks: Dict[str, asyncio.Lock] = {}
+_scrape_locks_guard = asyncio.Lock()
 
 
 async def run_blocking(func: Callable, /, *args, **kwargs):
@@ -913,6 +1177,15 @@ async def run_blocking(func: Callable, /, *args, **kwargs):
         raise last_exc
 
 
+async def _get_scrape_lock(key: str) -> asyncio.Lock:
+    async with _scrape_locks_guard:
+        lock = _scrape_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _scrape_locks[key] = lock
+        return lock
+
+
 async def save_scraped_account(username: str, network_id: int,is_admin: bool = False) -> bool:
     """Fetch live data for `username` using the scraper and only save it if the account belongs to network.
 
@@ -925,42 +1198,59 @@ async def save_scraped_account(username: str, network_id: int,is_admin: bool = F
     if not network_id:
         logger.warning("No network provided for scrape attempt: %s", username)
         return False
-    user = await UserManager.get_user_data(username, network_id,is_admin)
-    if not user:
-        logger.warning("Unauthorized scrape attempt: %s by network %s", username, network_id)
+
+    lock_key = f"{network_id}:{username}"
+    lock = await _get_scrape_lock(lock_key)
+    try:
+        await asyncio.wait_for(lock.acquire(), timeout=SCRAPE_LOCK_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.warning("Scrape lock timeout for %s", lock_key)
         return False
-
-    loop = asyncio.get_running_loop()
-
-    @retry(reraise=True, stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
-           retry=retry_if_exception_type(Exception))
-    def _fetch_blocking(u):
-        return fetch_single_user(u, is_admin)
 
     try:
-        result = await asyncio.wait_for(
-            loop.run_in_executor(EXEC, partial(_fetch_blocking, username)),
-            timeout=60,
+        user = await UserManager.get_user_data(username, network_id, is_admin)
+        if not user:
+            logger.warning("Unauthorized scrape attempt: %s by network %s", username, network_id)
+            return False
+
+        loop = asyncio.get_running_loop()
+
+        @retry(
+            reraise=True,
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+            retry=retry_if_exception_type(Exception),
         )
-    except asyncio.TimeoutError:
-        logger.error("Timeout fetching data for %s", username)
-        return False
-    except Exception as e:
-        logger.exception("fetch_single_user failed for %s: %s", username, e)
-        return False
+        def _fetch_blocking(u):
+            return fetch_single_user(u, is_admin)
 
-    if not isinstance(result, dict) or username not in result:
-        logger.warning("Unexpected fetch result for %s: %r", username, result)
-        return False
-
-    success = result.get(username, False)
-    if success:
-        logger.info("✅ Saved scraped data for %s under network %s", username, network_id)
         try:
-            CacheManager.clear(f"user_{network_id}_{username}")
-        except Exception:
-            pass
-        return True
-    else:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(EXEC, partial(_fetch_blocking, username)),
+                timeout=60,
+            )
+        except asyncio.TimeoutError:
+            logger.error("Timeout fetching data for %s", username)
+            return False
+        except Exception as e:
+            logger.exception("fetch_single_user failed for %s: %s", username, e)
+            return False
+
+        if not isinstance(result, dict) or username not in result:
+            logger.warning("Unexpected fetch result for %s: %r", username, result)
+            return False
+
+        success = result.get(username, False)
+        if success:
+            logger.info("✅ Saved scraped data for %s under network %s", username, network_id)
+            try:
+                CacheManager.clear(f"user_{network_id}_{username}")
+            except Exception:
+                pass
+            return True
+
         logger.error("❌ Failed to fetch or save data for %s under network %s", username, network_id)
         return False
+    finally:
+        if lock.locked():
+            lock.release()

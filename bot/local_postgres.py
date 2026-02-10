@@ -22,6 +22,7 @@ class DBResponse:
 
 
 _VALID_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_VALID_TYPE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?(?:\[\])?$")
 
 
 def _env_int(name: str, default: int) -> int:
@@ -61,6 +62,11 @@ def get_conn():
 def _validate_ident(name: str) -> None:
     if not _VALID_IDENT.match(name or ""):
         raise ValueError(f"Invalid SQL identifier: {name!r}")
+
+
+def _validate_type_name(name: str) -> None:
+    if not _VALID_TYPE.match(name or ""):
+        raise ValueError(f"Invalid SQL type name: {name!r}")
 
 
 def fetch_all(query: str, params: Optional[Iterable[Any]] = None) -> list[dict[str, Any]]:
@@ -107,6 +113,7 @@ def call_function(
     params: Optional[Mapping[str, Any]] = None,
     *,
     schema: str = "public",
+    param_types: Optional[Mapping[str, str]] = None,
 ) -> DBResponse:
     """Call a SQL function by name using named parameters.
 
@@ -118,14 +125,25 @@ def call_function(
     _validate_ident(function_name)
 
     params = params or {}
+    param_types = param_types or {}
     for k in params.keys():
         _validate_ident(k)
+    for k, t in param_types.items():
+        _validate_ident(k)
+        _validate_type_name(t)
 
     keys = list(params.keys())
     values = [params[k] for k in keys]
 
     if keys:
-        args_sql = sql.SQL(", ").join([sql.SQL("{} => %s").format(sql.Identifier(k)) for k in keys])
+        parts = []
+        for k in keys:
+            cast = param_types.get(k)
+            if cast:
+                parts.append(sql.SQL("{} => %s::{}").format(sql.Identifier(k), sql.SQL(cast)))
+            else:
+                parts.append(sql.SQL("{} => %s").format(sql.Identifier(k)))
+        args_sql = sql.SQL(", ").join(parts)
     else:
         args_sql = sql.SQL("")
 

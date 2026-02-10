@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import random
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict
@@ -18,6 +19,8 @@ from bot.selected_network_manager import SelectedNetwork, selected_network_manag
 
 # from config import SECONDARY_ADMIN
 logger = logging.getLogger(__name__)
+
+_all_users_refresh_lock = asyncio.Lock()
 
 
 async def _retry_async(op, *, attempts: int = 3, base_delay: float = 2.0, max_delay: float = 20.0, task_name: str = "async operation"):
@@ -64,6 +67,65 @@ async def periodic_sync() -> None:
         except Exception as e:
             logger.exception("Error in auto sync: %s", e)
         await asyncio.sleep(12 * 3600)
+
+
+async def periodic_all_users_refresh() -> None:
+    await asyncio.sleep(5)
+    interval = max(10, int(os.getenv("ALL_USERS_REFRESH_INTERVAL", "60")))
+    sem_users = asyncio.Semaphore(24)
+
+    async def _run_refresh() -> None:
+        try:
+            logger.info("Starting periodic refresh of all users...")
+            resp = await _retry_async(
+                lambda: get_all_users(),
+                attempts=3,
+                base_delay=2.0,
+                max_delay=20.0,
+                task_name="get_all_users",
+            )
+            all_users = getattr(resp, "data", None) or []
+            if not all_users:
+                logger.warning("No users found for periodic refresh")
+                return
+
+            async def fetch_and_save_user(user: Dict[str, Any]) -> bool:
+                async with sem_users:
+                    username = user.get("username")
+                    network_id = user.get("network_id", "")
+                    try:
+                        await _retry_async(
+                            lambda: asyncio.wait_for(save_scraped_account(username, network_id), timeout=30),
+                            attempts=3,
+                            base_delay=2.0,
+                            max_delay=15.0,
+                            task_name=f"save_scraped_account {username}",
+                        )
+                        return True
+                    except asyncio.TimeoutError:
+                        logger.warning("⏰ Timeout fetching data for %s", username)
+                        return False
+                    except Exception as e:
+                        logger.warning("❌ Failed to fetch data for %s: %s", username, e)
+                        return False
+
+            tasks = [asyncio.create_task(fetch_and_save_user(user)) for user in all_users]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            success_count = sum(1 for result in results if result is True)
+            logger.info("Periodic refresh done: %d/%d users updated", success_count, len(all_users))
+        except Exception as e:
+            logger.exception("Error in periodic_all_users_refresh: %s", e)
+
+    while True:
+        start = asyncio.get_running_loop().time()
+        if _all_users_refresh_lock.locked():
+            logger.info("Periodic refresh already running; skipping this tick")
+        else:
+            async with _all_users_refresh_lock:
+                logger.info("Acquired lock for periodic refresh")
+                await _run_refresh()
+        elapsed = asyncio.get_running_loop().time() - start
+        await asyncio.sleep(max(0.0, interval - elapsed))
 
 
 async def periodic_daily_report() -> None:

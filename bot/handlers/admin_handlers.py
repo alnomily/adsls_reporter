@@ -1,6 +1,9 @@
 import logging
+import calendar
+from datetime import datetime, timezone
 from functools import partial
 from typing import Optional
+import json
 import asyncio
 
 from aiogram import types, F
@@ -25,6 +28,11 @@ from bot.utils_shared import (
     update_user_status,
     get_active_users,
     get_networks,
+    get_pending_requests,
+    get_pending_request,
+    update_pending_status,
+    create_chat_user,
+    count_pending_requests,
 )
 from config import ADMIN_ID, ADMIN_IDS
 
@@ -33,6 +41,8 @@ logger.info("admin_handlers module loaded and handlers registered")
 
 PAGE_SIZE_CHATS = 20
 PAGE_SIZE_NETWORKS = 20
+PAGE_SIZE_REQUESTS = 20
+PAYMENT_METHOD_OPTIONS = ["جيب", "كريمي", "حوالة محلية", "نقدي", "بدون دفع"]
 
 # Global cache for chat users to avoid repeated fetches during pagination flows
 _CACHED_CHATS_USERS: Optional[list] = None
@@ -41,6 +51,8 @@ _CACHED_CHATS_LOCK = asyncio.Lock()
 # Track current pagination page for chat/network pickers so we can refresh without jumping back to page 0
 _CHAT_PAGE_STATE = {"activate": 0, "deactivate": 0}
 _NETWORK_PAGE_STATE = {"activate": 0, "deactivate": 0}
+_REQUEST_PAGE_STATE = {"pending": 0}
+_REQUEST_FILTER_STATE = {"status": "pending", "type": "all"}
 
 # Global cache for networks
 _CACHED_NETWORKS: Optional[list] = None
@@ -101,6 +113,8 @@ def _get_network_page(action: str) -> int:
 def _reset_page_state() -> None:
     _CHAT_PAGE_STATE.update({"activate": 0, "deactivate": 0})
     _NETWORK_PAGE_STATE.update({"activate": 0, "deactivate": 0})
+    _REQUEST_PAGE_STATE.update({"pending": 0})
+    _REQUEST_FILTER_STATE.update({"status": "pending", "type": "all"})
 
 
 # =========================
@@ -110,6 +124,12 @@ class AdminState(StatesGroup):
     add_user_username = State()
     add_user_password = State()
     add_user_adsl = State()
+
+
+class AdminRequestState(StatesGroup):
+    choose_expiration_date = State()
+    enter_amount = State()
+    choose_payment_method = State()
 
 
 # =========================
@@ -132,11 +152,111 @@ def _build_admin_menu_kb() -> InlineKeyboardMarkup:
          InlineKeyboardButton(text="🔕 إيقاف حساب", callback_data="admin:chat:deactivate")],
         [InlineKeyboardButton(text="📡 تفعيل شبكة", callback_data="admin:network:activate"),
          InlineKeyboardButton(text="📴 إيقاف شبكة", callback_data="admin:network:deactivate")],
+        [InlineKeyboardButton(text="🧾 الطلبات", callback_data="admin:requests")],
         [InlineKeyboardButton(text="📊 إحصائيات", callback_data="admin:stats"),
          InlineKeyboardButton(text="🔄 مزامنة", callback_data="admin:sync")],
         [InlineKeyboardButton(text="❌ إغلاق", callback_data="admin:close")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _set_request_page(page: int) -> None:
+    _REQUEST_PAGE_STATE["pending"] = max(0, page)
+
+
+def _get_request_page() -> int:
+    return max(0, _REQUEST_PAGE_STATE.get("pending", 0))
+
+
+def _set_request_filter(status: Optional[str] = None, req_type: Optional[str] = None) -> None:
+    if status:
+        _REQUEST_FILTER_STATE["status"] = status
+    if req_type:
+        _REQUEST_FILTER_STATE["type"] = req_type
+
+
+def _get_request_filters() -> dict:
+    return {
+        "status": _REQUEST_FILTER_STATE.get("status", "pending"),
+        "type": _REQUEST_FILTER_STATE.get("type", "all"),
+    }
+
+
+def _normalize_request_payload(request_row: dict) -> dict:
+    payload = request_row.get("request_payload") if isinstance(request_row, dict) else None
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return payload
+
+
+def _format_request_label(request_row: dict) -> str:
+    payload = _normalize_request_payload(request_row)
+    req_type = request_row.get("request_type") or "legacy"
+    network_name = payload.get("network_name") or request_row.get("network_id") or "-"
+    telegram_id = payload.get("telegram_id") or request_row.get("requester_telegram_id") or "-"
+    return f"{req_type} | {network_name} | {telegram_id}"
+
+
+def _build_request_details_text(request_row: dict) -> str:
+    payload = _normalize_request_payload(request_row)
+    req_type = request_row.get("request_type") or "legacy"
+    network_name = payload.get("network_name") or "-"
+    network_id = payload.get("network_id") or request_row.get("network_id") or "-"
+    telegram_id = payload.get("telegram_id") or request_row.get("requester_telegram_id") or "-"
+    user_name = payload.get("user_name") or "-"
+    adsl_numbers = payload.get("adsl_numbers") or []
+    lines_count = len(adsl_numbers) if isinstance(adsl_numbers, list) else 0
+    return (
+        "🧾 تفاصيل الطلب\n\n"
+        f"📌 النوع: {req_type}\n"
+        f"👤 المشترك: {user_name}\n"
+        f"📱 التليجرام: {telegram_id}\n"
+        f"🌐 الشبكة: {network_name} (ID: {network_id})\n"
+        f"📡 عدد الخطوط: {lines_count}"
+    )
+
+
+def _build_expiration_keyboard() -> InlineKeyboardMarkup:
+    today = datetime.now(timezone.utc).date()
+    buttons = []
+    for months in range(1, 7):
+        target_date = _add_months(today, months)
+        label = f"{months} شهر ({target_date.strftime('%Y-%m-%d')})"
+        buttons.append(
+            InlineKeyboardButton(
+                text=label,
+                callback_data=f"admin:requests:expiry:{months}"
+            )
+        )
+
+    rows = []
+    for idx in range(0, len(buttons), 3):
+        rows.append(buttons[idx: idx + 3])
+
+    rows.append([InlineKeyboardButton(text="❌ إلغاء", callback_data="admin:requests:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _add_months(base_date, months: int):
+    month_index = base_date.month - 1 + months
+    year = base_date.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(base_date.day, calendar.monthrange(year, month)[1])
+    return base_date.replace(year=year, month=month, day=day)
+
+
+def _safe_int(val, default: int = 0) -> int:
+    try:
+        if val is None:
+            return default
+        return int(val)
+    except Exception:
+        return default
 
 
 def _build_paged_rows(items, start, end, label_fn, cb_fn):
@@ -280,6 +400,544 @@ async def admin_command(message: types.Message):
         return
     kb = _build_admin_menu_kb()
     await message.answer(_admin_menu_text(), reply_markup=kb, parse_mode="Markdown")
+
+
+# =========================
+# Pending requests management
+# =========================
+async def _show_requests_picker(message: types.Message, page: int) -> None:
+    filters = _get_request_filters()
+    resp = await get_pending_requests(
+        filters.get("status"),
+        filters.get("type"),
+        limit=PAGE_SIZE_REQUESTS,
+        offset=page * PAGE_SIZE_REQUESTS,
+    )
+    rows_data = getattr(resp, "data", []) or []
+    total = await count_pending_requests(filters.get("status"), filters.get("type"))
+
+    if total == 0:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ رجوع", callback_data="admin:menu")]])
+        await safe_edit_text(message, "❌ لا توجد طلبات معلقة.", kb, markdown=False)
+        return
+
+    page = max(page, 0)
+    if page * PAGE_SIZE_REQUESTS >= total:
+        page = max((total - 1) // PAGE_SIZE_REQUESTS, 0)
+
+    _set_request_page(page)
+    total_pages = max((total + PAGE_SIZE_REQUESTS - 1) // PAGE_SIZE_REQUESTS, 1)
+    current_page_display = page + 1
+
+    rows = []
+    status_filter = filters.get("status") or "pending"
+    type_filter = filters.get("type") or "all"
+
+    status_row = [
+        InlineKeyboardButton(text=("✅ معلقة" if status_filter == "pending" else "معلقة"), callback_data="admin:requests:filter:status:pending"),
+        InlineKeyboardButton(text=("✅ مقبولة" if status_filter == "approved" else "مقبولة"), callback_data="admin:requests:filter:status:approved"),
+        InlineKeyboardButton(text=("✅ مرفوضة" if status_filter == "rejected" else "مرفوضة"), callback_data="admin:requests:filter:status:rejected"),
+        InlineKeyboardButton(text=("✅ الكل" if status_filter == "all" else "الكل"), callback_data="admin:requests:filter:status:all"),
+    ]
+    rows.append(status_row)
+
+    type_row = [
+        InlineKeyboardButton(text=("✅ كل الأنواع" if type_filter == "all" else "كل الأنواع"), callback_data="admin:requests:filter:type:all"),
+        InlineKeyboardButton(text=("✅ الشبكات" if type_filter == "network" else "الشبكات"), callback_data="admin:requests:filter:type:network"),
+        InlineKeyboardButton(text=("✅ الخطوط" if type_filter == "adsl" else "الخطوط"), callback_data="admin:requests:filter:type:adsl"),
+    ]
+    rows.append(type_row)
+
+    rows.extend([
+        [InlineKeyboardButton(text=_format_request_label(r), callback_data=f"admin:requests:view:{r.get('id')}")]
+        for r in rows_data
+    ])
+
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton(text=f"⬅️ السابق ({page})", callback_data=f"admin:requests:page:{page-1}"))
+    if (page + 1) * PAGE_SIZE_REQUESTS < total:
+        nav_row.append(InlineKeyboardButton(text=f"التالي ({page+2}) ➡️", callback_data=f"admin:requests:page:{page+1}"))
+    if nav_row:
+        rows.append(nav_row)
+
+    rows.append([InlineKeyboardButton(text="⬅️ رجوع", callback_data="admin:menu")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    header = (
+        f"🧾 الطلبات — العدد: {total}{f' • الصفحة {current_page_display}/{total_pages}' if total_pages > 1 else ''}\n"
+        f"الحالة: {status_filter} | النوع: {type_filter}\n"
+        "اختر طلباً للعرض:\n〰️"
+    )
+    await safe_edit_text(message, header, kb, markdown=False)
+
+
+@dp.callback_query(F.data == "admin:requests")
+async def admin_requests_menu(call: types.CallbackQuery):
+    if not BotUtils.is_admin(call.from_user.id):
+        await call.answer("⛔ غير مسموح", show_alert=True)
+        return
+    _set_request_page(0)
+    await _show_requests_picker(call.message, _get_request_page())
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("admin:requests:filter:status:"))
+async def admin_requests_filter_status(call: types.CallbackQuery):
+    if not BotUtils.is_admin(call.from_user.id):
+        await call.answer("⛔ غير مسموح", show_alert=True)
+        return
+    status = call.data.split(":", 4)[4]
+    _set_request_filter(status=status)
+    _set_request_page(0)
+    await _show_requests_picker(call.message, _get_request_page())
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("admin:requests:filter:type:"))
+async def admin_requests_filter_type(call: types.CallbackQuery):
+    if not BotUtils.is_admin(call.from_user.id):
+        await call.answer("⛔ غير مسموح", show_alert=True)
+        return
+    req_type = call.data.split(":", 4)[4]
+    _set_request_filter(req_type=req_type)
+    _set_request_page(0)
+    await _show_requests_picker(call.message, _get_request_page())
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("admin:requests:page:"))
+async def admin_requests_page(call: types.CallbackQuery):
+    if not BotUtils.is_admin(call.from_user.id):
+        await call.answer("⛔ غير مسموح", show_alert=True)
+        return
+    page = int(call.data.split(":", 3)[3])
+    _set_request_page(page)
+    await _show_requests_picker(call.message, _get_request_page())
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("admin:requests:view:"))
+async def admin_requests_view(call: types.CallbackQuery, state: FSMContext):
+    if not BotUtils.is_admin(call.from_user.id):
+        await call.answer("⛔ غير مسموح", show_alert=True)
+        return
+    req_id = call.data.split(":", 3)[3]
+    resp = await get_pending_request(req_id)
+    data = getattr(resp, "data", None) or resp
+    request_row = data if isinstance(data, dict) else (data[0] if isinstance(data, list) and data else None)
+    if not request_row:
+        await call.answer("❌ الطلب غير موجود.", show_alert=True)
+        await _show_requests_picker(call.message, _get_request_page())
+        return
+
+    await state.update_data(request_row=request_row, request_id=req_id)
+    text = _build_request_details_text(request_row)
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ قبول", callback_data=f"admin:requests:approve:{req_id}"),
+             InlineKeyboardButton(text="⚡ قبول سريع", callback_data=f"admin:requests:approve_quick:{req_id}")],
+            [InlineKeyboardButton(text="❌ رفض", callback_data=f"admin:requests:reject:{req_id}")],
+            [InlineKeyboardButton(text="⬅️ رجوع", callback_data="admin:requests")],
+        ]
+    )
+    await safe_edit_text(call.message, text, kb, markdown=False)
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("admin:requests:approve:"))
+async def admin_requests_approve(call: types.CallbackQuery, state: FSMContext):
+    if not BotUtils.is_admin(call.from_user.id):
+        await call.answer("⛔ غير مسموح", show_alert=True)
+        return
+    req_id = call.data.split(":", 3)[3]
+    resp = await get_pending_request(req_id)
+    data = getattr(resp, "data", None) or resp
+    request_row = data if isinstance(data, dict) else (data[0] if isinstance(data, list) and data else None)
+    if not request_row:
+        await call.answer("❌ الطلب غير موجود.", show_alert=True)
+        await _show_requests_picker(call.message, _get_request_page())
+        return
+
+    await state.update_data(request_row=request_row, request_id=req_id)
+    await state.set_state(AdminRequestState.choose_expiration_date)
+    await call.message.edit_text(
+        f"{_build_request_details_text(request_row)}\n\n📅 اختر مدة التفعيل (1-6 أشهر):",
+        reply_markup=_build_expiration_keyboard(),
+    )
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("admin:requests:approve_quick:"))
+async def admin_requests_approve_quick(call: types.CallbackQuery, state: FSMContext):
+    if not BotUtils.is_admin(call.from_user.id):
+        await call.answer("⛔ غير مسموح", show_alert=True)
+        return
+    req_id = call.data.split(":", 3)[3]
+    resp = await get_pending_request(req_id)
+    data = getattr(resp, "data", None) or resp
+    request_row = data if isinstance(data, dict) else (data[0] if isinstance(data, list) and data else None)
+    if not request_row:
+        await call.answer("❌ الطلب غير موجود.", show_alert=True)
+        await _show_requests_picker(call.message, _get_request_page())
+        return
+
+    await state.update_data(request_row=request_row, request_id=req_id, approval_quick=True)
+    await state.set_state(AdminRequestState.choose_expiration_date)
+    await call.message.edit_text(
+        f"{_build_request_details_text(request_row)}\n\n⚡ قبول سريع: اختر مدة التفعيل فقط.",
+        reply_markup=_build_expiration_keyboard(),
+    )
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("admin:requests:expiry:"))
+async def admin_requests_choose_expiry(call: types.CallbackQuery, state: FSMContext):
+    if not BotUtils.is_admin(call.from_user.id):
+        await call.answer("⛔ غير مسموح", show_alert=True)
+        return
+    state_data = await state.get_data()
+    request_row = state_data.get("request_row") or {}
+    payload = _normalize_request_payload(request_row)
+
+    months_str = call.data.split(":", 3)[3]
+    months = _safe_int(months_str, 0)
+    if months <= 0:
+        await call.answer("⚠️ مدة غير صالحة.", show_alert=True)
+        return
+
+    today = datetime.now(timezone.utc).date()
+    exp_date = _add_months(today, months)
+    lines_count = len(payload.get("adsl_numbers", [])) or len(payload.get("user_ids", [])) or 0
+    suggested_amount = lines_count * 200
+
+    await state.update_data(
+        approval_expiration_date=exp_date.isoformat(),
+        approval_suggested_amount=suggested_amount,
+        approval_duration_months=months,
+    )
+
+    if state_data.get("approval_quick"):
+        req_id = state_data.get("request_id")
+        target_telegram_id = payload.get("telegram_id") or request_row.get("requester_telegram_id")
+        network_id = payload.get("network_id") or request_row.get("network_id")
+        user_ids = payload.get("user_ids") or []
+
+        if not req_id or not target_telegram_id or not network_id:
+            await call.answer("❌ بيانات الطلب غير مكتملة.", show_alert=True)
+            await state.clear()
+            return
+
+        admin_tid = str(call.from_user.id)
+        payer = await chat_user_manager.get(admin_tid)
+        if not payer:
+            payer_resp = await create_chat_user(admin_tid, call.from_user.full_name or admin_tid)
+            payer_chat_user_id = payer_resp.data[0]["id"] if getattr(payer_resp, "data", None) else 0
+        else:
+            payer_chat_user_id = getattr(payer, "chat_user_id", 0)
+
+        if not payer_chat_user_id:
+            await call.answer("❌ تعذر تحديد حساب الدافع. حاول مرة أخرى.", show_alert=True)
+            await state.clear()
+            return
+
+        await UserManager.activate_users(user_ids)
+        is_activated = await UserManager.approve_registration(
+            users_ids=user_ids,
+            telegram_id=str(target_telegram_id),
+            payer_chat_user_id=payer_chat_user_id,
+            network_id=int(network_id),
+            expiration_date=exp_date.isoformat(),
+            amount=None,
+            payment_method=None,
+        )
+
+        if is_activated:
+            try:
+                await update_pending_status(req_id, "approved")
+            except Exception:
+                logger.exception("Failed to update pending request status to approved")
+            try:
+                await chat_user_manager.refresh(str(target_telegram_id))
+            except Exception:
+                logger.exception("Failed to refresh chat user cache")
+            try:
+                await bot.send_message(
+                    str(target_telegram_id),
+                    "✅ تم قبول طلبك من قبل الإدارة.\n"
+                    f"⏳ المدة: {months} شهر\n"
+                    f"📅 تاريخ الانتهاء: {exp_date.isoformat()}\n"
+                    "💳 المبلغ: بدون مبلغ\n"
+                    "💰 طريقة الدفع: بدون دفع",
+                )
+            except Exception:
+                logger.exception("Failed to notify requester about approval")
+
+            await call.message.edit_text(
+                f"✅ تم التفعيل (بدون مبلغ).\n⏳ {months} شهر\n📅 {exp_date.isoformat()}",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[[InlineKeyboardButton(text="⬅️ رجوع", callback_data="admin:requests")]]
+                ),
+            )
+        else:
+            await call.message.edit_text("❌ حدث خطأ أثناء قبول الطلب. حاول مرة أخرى.")
+
+        await state.clear()
+        await call.answer()
+        return
+
+    await state.set_state(AdminRequestState.enter_amount)
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"استخدام المبلغ المقترح ({suggested_amount})", callback_data=f"admin:requests:use_amount:{suggested_amount}")],
+            [InlineKeyboardButton(text="بدون مبلغ", callback_data="admin:requests:use_amount:0")],
+            [InlineKeyboardButton(text="⬅️ تعديل التاريخ", callback_data="admin:requests:retry_expiry"), InlineKeyboardButton(text="❌ إلغاء", callback_data="admin:requests:cancel")],
+        ]
+    )
+
+    prompt = (
+        "🧾 إعدادات الدفع\n"
+        f"⏳ مدة التفعيل: {months} شهر\n"
+        f"📅 تاريخ الانتهاء: {exp_date.isoformat()}\n"
+        f"📡 عدد الخطوط: {lines_count}\n"
+        f"💵 المبلغ المقترح (200 لكل خط): {suggested_amount}\n"
+        "✏️ أرسل مبلغاً مختلفاً إذا لزم، أو اختر بدون مبلغ."
+    )
+
+    await call.message.edit_text(prompt, reply_markup=kb)
+    await call.answer()
+
+
+@dp.callback_query(F.data == "admin:requests:retry_expiry")
+async def admin_requests_retry_expiry(call: types.CallbackQuery, state: FSMContext):
+    if not BotUtils.is_admin(call.from_user.id):
+        await call.answer("⛔ غير مسموح", show_alert=True)
+        return
+    await state.set_state(AdminRequestState.choose_expiration_date)
+    await call.message.edit_text(
+        "📅 اختر مدة التفعيل (1-6 أشهر):",
+        reply_markup=_build_expiration_keyboard(),
+    )
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("admin:requests:use_amount:"))
+async def admin_requests_use_amount(call: types.CallbackQuery, state: FSMContext):
+    if not BotUtils.is_admin(call.from_user.id):
+        await call.answer("⛔ غير مسموح", show_alert=True)
+        return
+    amount = _safe_int(call.data.split(":", 3)[3], 0)
+    state_data = await state.get_data()
+    exp_date = state_data.get("approval_expiration_date")
+    months = _safe_int(state_data.get("approval_duration_months"), 0)
+    if amount < 0 or not exp_date:
+        await call.answer("⚠️ مبلغ غير صالح.", show_alert=True)
+        return
+
+    await state.update_data(approval_amount=amount)
+    await state.set_state(AdminRequestState.choose_payment_method)
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📲 جيب", callback_data="admin:requests:pay:جيب"), InlineKeyboardButton(text="🏦 كريمي", callback_data="admin:requests:pay:كريمي")],
+            [InlineKeyboardButton(text="💸 حوالة محلية", callback_data="admin:requests:pay:حوالة محلية"), InlineKeyboardButton(text="💵 نقدي", callback_data="admin:requests:pay:نقدي")],
+            [InlineKeyboardButton(text="🚫 بدون دفع", callback_data="admin:requests:pay:بدون دفع")],
+            [InlineKeyboardButton(text="⬅️ تعديل التاريخ", callback_data="admin:requests:retry_expiry"), InlineKeyboardButton(text="❌ إلغاء", callback_data="admin:requests:cancel")],
+        ]
+    )
+
+    await call.message.edit_text(
+        f"🧾 تأكيد الدفع\n⏳ المدة: {months} شهر\n📅 تاريخ الانتهاء: {exp_date}\n💵 المبلغ: {amount}\nاختر طريقة الدفع:\n(يمكن اختيار بدون دفع)",
+        reply_markup=kb,
+    )
+    await call.answer()
+
+
+@dp.message(AdminRequestState.enter_amount)
+async def admin_requests_amount(message: types.Message, state: FSMContext):
+    if not BotUtils.is_admin(message.from_user.id):
+        await message.answer("⛔ غير مسموح")
+        return
+    state_data = await state.get_data()
+    exp_date = state_data.get("approval_expiration_date")
+    months = _safe_int(state_data.get("approval_duration_months"), 0)
+    if not exp_date:
+        await message.answer("❌ لا يوجد طلب معلق.")
+        await state.clear()
+        return
+    try:
+        amount = int((message.text or "").strip())
+    except Exception:
+        await message.answer("⚠️ أدخل المبلغ كرقم صحيح.")
+        return
+    if amount < 0:
+        await message.answer("⚠️ يجب ألا يكون المبلغ سالباً.")
+        return
+
+    await state.update_data(approval_amount=amount)
+    await state.set_state(AdminRequestState.choose_payment_method)
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📲 جيب", callback_data="admin:requests:pay:جيب"), InlineKeyboardButton(text="🏦 كريمي", callback_data="admin:requests:pay:كريمي")],
+            [InlineKeyboardButton(text="💸 حوالة محلية", callback_data="admin:requests:pay:حوالة محلية"), InlineKeyboardButton(text="💵 نقدي", callback_data="admin:requests:pay:نقدي")],
+            [InlineKeyboardButton(text="🚫 بدون دفع", callback_data="admin:requests:pay:بدون دفع")],
+            [InlineKeyboardButton(text="⬅️ تعديل التاريخ", callback_data="admin:requests:retry_expiry"), InlineKeyboardButton(text="❌ إلغاء", callback_data="admin:requests:cancel")],
+        ]
+    )
+
+    await message.answer(
+        f"🧾 تأكيد الدفع\n⏳ المدة: {months} شهر\n📅 تاريخ الانتهاء: {exp_date}\n💵 المبلغ: {amount}\nاختر طريقة الدفع:\n(يمكن اختيار بدون دفع)",
+        reply_markup=kb,
+    )
+
+
+@dp.callback_query(F.data.startswith("admin:requests:pay:"))
+async def admin_requests_payment(call: types.CallbackQuery, state: FSMContext):
+    if not BotUtils.is_admin(call.from_user.id):
+        await call.answer("⛔ غير مسموح", show_alert=True)
+        return
+    state_data = await state.get_data()
+    request_row = state_data.get("request_row") or {}
+    payload = _normalize_request_payload(request_row)
+    req_id = state_data.get("request_id")
+    exp_date = state_data.get("approval_expiration_date")
+    months = _safe_int(state_data.get("approval_duration_months"), 0)
+    amount = state_data.get("approval_amount")
+
+    if not req_id or not exp_date or amount is None:
+        await call.answer("❌ البيانات غير مكتملة.", show_alert=True)
+        await state.clear()
+        return
+
+    payment_method = call.data.split(":", 3)[3]
+    if payment_method not in PAYMENT_METHOD_OPTIONS:
+        await call.answer("⚠️ اختر طريقة دفع صالحة.", show_alert=True)
+        return
+
+    target_telegram_id = payload.get("telegram_id") or request_row.get("requester_telegram_id")
+    network_id = payload.get("network_id") or request_row.get("network_id")
+    user_ids = payload.get("user_ids") or []
+
+    if not target_telegram_id or not network_id:
+        await call.answer("❌ بيانات الطلب غير مكتملة.", show_alert=True)
+        await state.clear()
+        return
+
+    admin_tid = str(call.from_user.id)
+    payer = await chat_user_manager.get(admin_tid)
+    if not payer:
+        payer_resp = await create_chat_user(admin_tid, call.from_user.full_name or admin_tid)
+        payer_chat_user_id = payer_resp.data[0]["id"] if getattr(payer_resp, "data", None) else 0
+    else:
+        payer_chat_user_id = getattr(payer, "chat_user_id", 0)
+
+    if not payer_chat_user_id:
+        await call.answer("❌ تعذر تحديد حساب الدافع. حاول مرة أخرى.", show_alert=True)
+        await state.clear()
+        return
+
+    amount_value = _safe_int(amount, 0)
+    if amount_value < 0:
+        await call.answer("⚠️ مبلغ غير صالح.", show_alert=True)
+        return
+
+    await UserManager.activate_users(user_ids)
+    is_activated = await UserManager.approve_registration(
+        users_ids=user_ids,
+        telegram_id=str(target_telegram_id),
+        payer_chat_user_id=payer_chat_user_id,
+        network_id=int(network_id),
+        expiration_date=exp_date,
+        amount=amount_value,
+        payment_method=payment_method,
+    )
+
+    if is_activated:
+        try:
+            await update_pending_status(req_id, "approved")
+        except Exception:
+            logger.exception("Failed to update pending request status to approved")
+        try:
+            await chat_user_manager.refresh(str(target_telegram_id))
+        except Exception:
+            logger.exception("Failed to refresh chat user cache")
+        try:
+            await bot.send_message(
+                str(target_telegram_id),
+                "✅ تم قبول طلبك من قبل الإدارة.\n"
+                f"⏳ المدة: {months} شهر\n"
+                f"📅 تاريخ الانتهاء: {exp_date}\n"
+                f"💳 المبلغ: {amount_value}\n"
+                f"💰 طريقة الدفع: {payment_method}",
+            )
+        except Exception:
+            logger.exception("Failed to notify requester about approval")
+
+        status_line = "✅ تم التفعيل وتسجيل الدفع."
+        await call.message.edit_text(
+            f"{status_line}\n⏳ {months} شهر\n📅 {exp_date}\n💵 {amount_value}\n💰 {payment_method}",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="⬅️ رجوع", callback_data="admin:requests")]]
+            ),
+        )
+    else:
+        await call.message.edit_text("❌ حدث خطأ أثناء قبول الطلب. حاول مرة أخرى.")
+
+    await state.clear()
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("admin:requests:reject:"))
+async def admin_requests_reject(call: types.CallbackQuery, state: FSMContext):
+    if not BotUtils.is_admin(call.from_user.id):
+        await call.answer("⛔ غير مسموح", show_alert=True)
+        return
+    req_id = call.data.split(":", 3)[3]
+    resp = await get_pending_request(req_id)
+    data = getattr(resp, "data", None) or resp
+    request_row = data if isinstance(data, dict) else (data[0] if isinstance(data, list) and data else None)
+    if not request_row:
+        await call.answer("❌ الطلب غير موجود.", show_alert=True)
+        await _show_requests_picker(call.message, _get_request_page())
+        return
+
+    try:
+        await update_pending_status(req_id, "rejected")
+    except Exception:
+        logger.exception("Failed to update pending request status to rejected")
+
+    payload = _normalize_request_payload(request_row)
+    target_telegram_id = payload.get("telegram_id") or request_row.get("requester_telegram_id")
+    try:
+        if target_telegram_id:
+            await chat_user_manager.refresh(str(target_telegram_id))
+    except Exception:
+        logger.exception("Failed to refresh chat user cache")
+    try:
+        if target_telegram_id:
+            await bot.send_message(str(target_telegram_id), "❌ تم رفض طلبك من قبل الإدارة.")
+    except Exception:
+        logger.exception("Failed to notify requester about rejection")
+
+    await call.message.edit_text(
+        "❌ تم رفض الطلب.",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="⬅️ رجوع", callback_data="admin:requests")]]
+        ),
+    )
+    await state.clear()
+    await call.answer()
+
+
+@dp.callback_query(F.data == "admin:requests:cancel")
+async def admin_requests_cancel(call: types.CallbackQuery, state: FSMContext):
+    if not BotUtils.is_admin(call.from_user.id):
+        await call.answer("⛔ غير مسموح", show_alert=True)
+        return
+    await state.clear()
+    await _show_requests_picker(call.message, _get_request_page())
+    await call.answer()
 
 
 # =========================

@@ -7,6 +7,7 @@ from typing import Optional
 from aiogram import types
 from aiogram.filters import Command, CommandObject
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.context import FSMContext
 
 from bot.app import dp, bot, EXEC, SCRAPE_SEMAPHORE
 from bot.cache import CacheManager
@@ -17,6 +18,7 @@ from bot.table_report import TableReportGenerator
 from bot.report_image import ReportImageGenerator
 from bot.user_report import AccountData, UserReport
 from bot.utils import BotUtils
+from bot.utils import block_if_active_flow
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +89,9 @@ logger = logging.getLogger(__name__)
 
 
 @dp.message(Command("image"))
-async def image_command(message: types.Message, command: CommandObject):
+async def image_command(message: types.Message, command: CommandObject, state: FSMContext):
+    if await block_if_active_flow(message, state):
+        return
     if not command.args:
         await message.answer("❗ Please provide a username: /image <username>")
         return

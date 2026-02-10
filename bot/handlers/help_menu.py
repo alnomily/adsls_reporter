@@ -3,7 +3,9 @@
 from aiogram import types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.context import FSMContext
 from bot.app import dp
+from bot.utils import block_if_active_flow
 
 # ================= HELP TEXT BUILDERS =================
 def _rtl_wrap(text: str) -> str:
@@ -173,7 +175,9 @@ def build_help_chunks(max_len: int = 3500) -> list[str]:
 
 # ================= HANDLERS =================
 @dp.message(Command("help"))
-async def help_command(message: types.Message):
+async def help_command(message: types.Message, state: FSMContext):
+    if await block_if_active_flow(message, state):
+        return
     chunks = build_help_chunks()
     total = len(chunks)
 

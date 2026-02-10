@@ -5,6 +5,7 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.context import FSMContext
 from bot.app import dp
+from bot.utils import block_if_active_flow
 
 
 def build_command_menu_inline():
@@ -39,7 +40,9 @@ def build_command_menu_reply():
 
 @dp.message(Command("menu"))
 @dp.message(Command("start"))
-async def show_main_menu(message: types.Message):
+async def show_main_menu(message: types.Message, state: FSMContext):
+    if await block_if_active_flow(message, state):
+        return
     await message.answer("⬇️ اختر من القائمة:", reply_markup=build_command_menu_reply())
 
 @dp.callback_query(lambda c: c.data == "menu_close")
@@ -50,16 +53,55 @@ async def menu_close(call: types.CallbackQuery):
 
 # Generic handler to map command callbacks (cmd:<name>) to sending the corresponding slash command
 @dp.callback_query(lambda c: c.data.startswith("cmd:"))
-async def menu_command_callback(call: types.CallbackQuery):
+async def menu_command_callback(call: types.CallbackQuery, state: FSMContext):
+    if await block_if_active_flow(call, state):
+        return
     cmd = call.data.split(":", 1)[-1].strip()
     if not cmd:
         await call.answer()
         return
-    # Send the slash command text to trigger existing handlers
     try:
         await call.answer()
     except Exception:
         pass
+
+    # Call handlers directly to avoid echoing /command
+    try:
+        if cmd == "start":
+            from bot.handlers.user_handlers import start_handler
+            await start_handler(call.message, state)
+            return
+        if cmd == "networks":
+            from bot.handlers.user_handlers import networks_menu
+            await networks_menu(call.message, state)
+            return
+        if cmd == "adsls":
+            from bot.handlers.user_handlers import adsls_menu
+            await adsls_menu(call.message, state)
+            return
+        if cmd == "reports":
+            from bot.handlers.user_handlers import mysummary_command
+            await mysummary_command(call.message, state=state)
+            return
+        if cmd == "account":
+            from bot.handlers.user_handlers import status_command
+            await status_command(call.message, state)
+            return
+        if cmd == "settings":
+            from bot.handlers.user_handlers import settings_handler
+            await settings_handler(call.message, state)
+            return
+        if cmd == "about":
+            from bot.handlers.user_handlers import about_command
+            await about_command(call.message, state)
+            return
+        if cmd == "help":
+            from bot.handlers.help_menu import help_command
+            await help_command(call.message, state)
+            return
+    except Exception:
+        pass
+
     try:
         await call.message.answer(f"/{cmd}")
     except Exception:
@@ -81,6 +123,8 @@ _TEXT_TO_CMD = {
 
 @dp.message(lambda m: m.text in _TEXT_TO_CMD)
 async def menu_reply_button_handler(message: types.Message, state: FSMContext):
+    if await block_if_active_flow(message, state):
+        return
     cmd = _TEXT_TO_CMD.get(message.text)
     if not cmd:
         return
@@ -112,7 +156,7 @@ async def menu_reply_button_handler(message: types.Message, state: FSMContext):
         # Call the existing reports handler directly to avoid echoing /reports
         try:
             from bot.handlers.user_handlers import mysummary_command
-            await mysummary_command(message)
+            await mysummary_command(message, state=state)
             return
         except Exception:
             pass
@@ -120,7 +164,7 @@ async def menu_reply_button_handler(message: types.Message, state: FSMContext):
         # Call the existing account handler directly to avoid echoing /account
         try:
             from bot.handlers.user_handlers import status_command
-            await status_command(message)
+            await status_command(message, state)
             return
         except Exception:
             pass
@@ -128,7 +172,7 @@ async def menu_reply_button_handler(message: types.Message, state: FSMContext):
         # Call the existing settings handler directly to avoid echoing /settings
         try:
             from bot.handlers.user_handlers import settings_handler
-            await settings_handler(message)
+            await settings_handler(message, state)
             return
         except Exception:
             pass
@@ -136,7 +180,7 @@ async def menu_reply_button_handler(message: types.Message, state: FSMContext):
         # Call the existing about handler directly to avoid echoing /about
         try:
             from bot.handlers.user_handlers import about_command
-            await about_command(message)
+            await about_command(message, state)
             return
         except Exception:
             pass
@@ -144,7 +188,7 @@ async def menu_reply_button_handler(message: types.Message, state: FSMContext):
         # Call the existing help handler directly to avoid echoing /help
         try:
             from bot.handlers.help_menu import help_command
-            await help_command(message)
+            await help_command(message, state)
             return
         except Exception:
             pass

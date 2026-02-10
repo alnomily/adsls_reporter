@@ -51,7 +51,7 @@ from bot.handlers import (
     background_tasks as background_tasks_module,
     partners_handlers,      # ✅ أضف هذا
 )
-from bot.handlers.background_tasks import periodic_daily_report, cache_cleaner
+from bot.handlers.background_tasks import periodic_daily_report, cache_cleaner, periodic_all_users_refresh
 
 from bot.cache import CacheManager, set_freshness
 from bot.utils_shared import (
@@ -219,6 +219,7 @@ async def main() -> None:
     # asyncio.create_task(periodic_sync())
     asyncio.create_task(periodic_daily_report())
     asyncio.create_task(cache_cleaner())
+    asyncio.create_task(periodic_all_users_refresh())
     # asyncio.create_task(periodic_send_image())
 
     try:

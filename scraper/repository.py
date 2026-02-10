@@ -105,6 +105,7 @@ def save_account_data_rpc(user_id: int, account_data: Dict[str, Any]) -> bool:
         logger.info("Saving account data: %s, %s, %s, %s, %s, %s", account_data.get("account_name"), user_id, account_data.get("available_balance"), plan_text, account_data.get("status"), account_data.get("expiry_date"))
         data = getattr(resp, "data", None) or []
         if data and isinstance(data[0], dict):
+            logger.info("Save result: %s", data[0].get("message") or data[0].get("success"))
             return bool(data[0].get("success"))
         return False
     except Exception:

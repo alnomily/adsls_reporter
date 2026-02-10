@@ -1,6 +1,7 @@
 import asyncio
 import os
 import logging
+import json
 from PIL import Image
 from datetime import datetime, timezone, timedelta
 import calendar
@@ -14,9 +15,18 @@ import calendar
 from bot.selected_network_manager import selected_network_manager,SelectedNetwork
 from bot.chat_user_manager import chat_user_manager
 from bot.app import dp, bot, EXEC, SCRAPE_SEMAPHORE
-from bot.state import PENDING_ADD_USERS
-PENDING_ENABLE_REQUESTS: dict = {}
-from bot.utils_shared import create_chat_user, create_network, save_scraped_account, get_all_users_by_network_id
+from bot.utils_shared import (
+    create_chat_user,
+    create_network,
+    save_scraped_account,
+    get_all_users_by_network_id,
+    insert_pending_request_v2,
+    update_pending_status,
+    update_pending_admin_msgs,
+    has_pending_request,
+    get_pending_request,
+    get_pending_requests_for_requester,
+)
 from config import ADMIN_ID, ADMIN_IDS
 from scraper.runner import process_all_adsls, process_all_adsls_with_usernames
 from scraper.utils import add_log
@@ -41,7 +51,8 @@ import re
 from bot.handlers import main_menu
 from bot.handlers.main_menu import build_command_menu_reply
 # Payment method choices for admin approval
-PAYMENT_METHOD_OPTIONS = ["جيب", "كريمي", "حوالة محلية", "نقدي"]
+PAYMENT_METHOD_OPTIONS = ["جيب", "كريمي", "حوالة محلية", "نقدي", "بدون دفع"]
+PENDING_REQUEST_TYPES_BLOCKING = ["network_add", "adsl_add", "adsl_add_with_names", "network_enable"]
 
 # class RegisterState(StatesGroup):
 #     name = State()
@@ -64,8 +75,22 @@ class AdminApproveState(StatesGroup):
     enter_amount = State()
     choose_payment_method = State()
 
+
+async def _block_if_active_flow(target: types.Message | types.CallbackQuery, state: FSMContext) -> bool:
+    current_state = await state.get_state()
+    if not current_state:
+        return False
+    message = "⚠️ لديك عملية قيد التنفيذ. أكملها أولاً أو اضغط إلغاء."
+    if isinstance(target, types.CallbackQuery):
+        await target.answer(message, show_alert=True)
+    else:
+        await target.answer(message)
+    return True
+
 @dp.message(Command("start"))
 async def start_handler(message: types.Message, state: FSMContext):
+    if await _block_if_active_flow(message, state):
+        return
     telegram_id = str(message.chat.id)
 
     user = await chat_user_manager.get(telegram_id)
@@ -102,14 +127,13 @@ async def register_network_add(message: types.Message, state: FSMContext):
         return
 
     name = (message.text or "").strip()
-    logger.info("Adding new network with name=%s", name)
+    logger.info("Adding new network_add with name=%s", name)
     if name.startswith("/"):
         await message.answer("⚠️ لا يمكن أن يبدأ اسم الشبكة بـ '/'. الرجاء إدخال اسم صحيح:")
         await state.set_state(RegisterState.network)
         return
 
     await state.update_data(network_name=name)
-    await state.set_state(RegisterState.adsl)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ نعم، إضافة ADSL الآن", callback_data="confirm_add_adsls_yes")],
@@ -133,7 +157,6 @@ async def register_network(message: types.Message, state: FSMContext):
             return
 
         await state.update_data(network_name=message.text)
-        await state.set_state(RegisterState.adsl)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ نعم، إضافة ADSL الآن", callback_data="confirm_add_adsls_yes")],
@@ -172,7 +195,7 @@ async def skip_adsls(call: types.CallbackQuery, state: FSMContext):
     telegram_id = str(call.from_user.id)
 
     # Block duplicate pending requests for this chat
-    if _has_pending_request(call.message.chat.id):
+    if await has_pending_request(telegram_id, PENDING_REQUEST_TYPES_BLOCKING):
         await call.answer("⚠️ لديك طلب قيد المراجعة حالياً. انتظر قرار الإدارة قبل إرسال طلب جديد.", show_alert=True)
         await state.clear()
         await call.message.delete()
@@ -194,29 +217,50 @@ async def skip_adsls(call: types.CallbackQuery, state: FSMContext):
     if "network_name" in (data or {}):
         network = await create_network(chat_user_id, escape_markdown(data.get("network_name", "")))
         network_name = escape_markdown(data.get("network_name", ""))
+        logger.info("Created network with id=%s for user_id=%s", getattr(network, "data", None), chat_user_id)
         try:
             network_id = _extract_network_id(network)
+            logger.info("Created network with id=%s for user_id=%s", network_id, chat_user_id)
         except Exception as e:
             logger.exception("Error processing network creation response: %s", e)
             network_id = None
 
-    PENDING_ADD_USERS[call.message.chat.id] = {
-        "user_ids": [],
-        "network_id": network_id,
-        "adsl_numbers": [],
-        "user_name": chat_user_name,
-        "network_name": network_name,
-        "admin_msgs": {}
-    }
+    req_id = None
+    try:
+        payload = {
+            "telegram_id": telegram_id,
+            "user_name": chat_user_name,
+            "network_id": network_id,
+            "network_name": network_name,
+            "adsl_numbers": [],
+            "user_ids": [],
+            "registration_mode": bool(data.get("registration_mode")),
+        }
+        req_resp = await insert_pending_request_v2(
+            "network_add",
+            payload,
+            requester_telegram_id=telegram_id,
+            network_id=network_id,
+        )
+        req_data = getattr(req_resp, "data", None) or []
+        req_id = (req_data[0].get("id") if isinstance(req_data, list) and req_data else None) if req_data else None
+    except Exception:
+        logger.exception("Failed to persist pending network-add request")
 
     # Ask admins to approve the newly added network
     # await _notify_admins_network_request(telegram_id, chat_user_name, network_name, network_id)
 
+    if not req_id:
+        await call.answer("❌ تعذر إنشاء الطلب. حاول مرة أخرى.", show_alert=True)
+        await state.clear()
+        return
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✅ قبول", callback_data=f"approve_{telegram_id}"),
-            InlineKeyboardButton(text="❌ رفض", callback_data=f"reject_{telegram_id}")
-        ]
+            InlineKeyboardButton(text="✅ قبول", callback_data=f"pending:approve:{req_id}"),
+            InlineKeyboardButton(text="⚡ قبول سريع", callback_data=f"pending:quick:{req_id}")
+        ],
+        [InlineKeyboardButton(text="❌ رفض", callback_data=f"pending:reject:{req_id}")]
     ])
     admin_targets = ADMIN_IDS or ([ADMIN_ID] if ADMIN_ID else [])
     admin_msgs = {}
@@ -237,11 +281,11 @@ async def skip_adsls(call: types.CallbackQuery, state: FSMContext):
         except Exception:
             logger.exception("Failed to notify admin about signup")
 
-    if admin_msgs:
+    if admin_msgs and req_id:
         try:
-            PENDING_ADD_USERS[call.message.chat.id]["admin_msgs"] = admin_msgs
+            await update_pending_admin_msgs(req_id, admin_msgs)
         except Exception:
-            pass
+            logger.exception("Failed to persist admin messages for pending request")
 
     # Inform the user (ensure non-empty message)
     user_added_text = f"✅ تم تسجيلك باسم {chat_user_name}." if isSignup else ""
@@ -277,8 +321,10 @@ async def adsl_manual(call: types.CallbackQuery, state: FSMContext):
         ])
     try:
         await call.message.edit_text("📡كتب أرقام ADSL (كل رقم في سطر):\nمثال:\n01087890\n01098099\n01836382", reply_markup=kb)
+        await state.update_data(adsl_prompt_message_id=call.message.message_id)
     except Exception:
-        await call.message.answer("📡 كتب أرقام ADSL (كل رقم في سطر):\nمثال:\n01087890\n01098099\n01836382", reply_markup=kb)
+        sent = await call.message.answer("📡 كتب أرقام ADSL (كل رقم في سطر):\nمثال:\n01087890\n01098099\n01836382", reply_markup=kb)
+        await state.update_data(adsl_prompt_message_id=getattr(sent, "message_id", None))
     await call.answer()
 
 @dp.callback_query(F.data == "adsl_manual_with_names")
@@ -298,12 +344,16 @@ async def adsl_manual_with_names(call: types.CallbackQuery, state: FSMContext):
         ])
     try:
         await call.message.edit_text("📡 اكتب أرقام ADSL مع أسماء المستخدمين (كل زوج في سطر، مفصول بمسافة أو فاصلة) الخانة الأولى هي رقم ADSL واسم المستخدم بعدها:\nمثال:\n01087890 087890\n01098099,11098099\n01836382 1836382", reply_markup=kb)
+        await state.update_data(adsl_prompt_message_id=call.message.message_id)
     except Exception:
-        await call.message.answer("📡 اكتب أرقام ADSL مع أسماء المستخدمين (كل زوج في سطر، مفصول بمسافة أو فاصلة) الخانة الأولى هي رقم ADSL واسم المستخدم بعدها:\nمثال:\n01087890 087890\n01098099,11098099\n01836382 1836382", reply_markup=kb)
+        sent = await call.message.answer("📡 اكتب أرقام ADSL مع أسماء المستخدمين (كل زوج في سطر، مفصول بمسافة أو فاصلة) الخانة الأولى هي رقم ADSL واسم المستخدم بعدها:\nمثال:\n01087890 087890\n01098099,11098099\n01836382 1836382", reply_markup=kb)
+        await state.update_data(adsl_prompt_message_id=getattr(sent, "message_id", None))
     await call.answer()
 
 @dp.callback_query(F.data == "adsl_move")
 async def adsl_move(call: types.CallbackQuery, state: FSMContext):
+    if await _block_if_active_flow(call, state):
+        return
     telegram_id = str(call.from_user.id)
     user = await chat_user_manager.get(telegram_id)
     current_state = await state.get_state()
@@ -634,7 +684,7 @@ async def move_to_network(call: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "cancel_move_adsls")
 async def cancel_move_adsls_callback(call: types.CallbackQuery, state: FSMContext):
     await call.message.edit_text("⬅️ تم إلغاء عملية النقل.")
-    await state.clear()
+    await _clear_user_flow_state(call.from_user.id, state)
     await call.answer()
 
 @dp.message(RegisterState.adsl)
@@ -649,11 +699,18 @@ async def register_finish(message: types.Message, state: FSMContext):
     is_add_network_request = bool(data.get("expecting_new_network"))
 
     # Block duplicate pending requests for this chat
-    if not registration_mode and _has_pending_request(message.chat.id):
+    if not registration_mode and await has_pending_request(telegram_id, PENDING_REQUEST_TYPES_BLOCKING):
         await message.answer("⚠️ لديك طلب قيد المراجعة حالياً. انتظر قرار الإدارة قبل إرسال طلب جديد.")
         await state.clear()
         await message.delete()
         return
+
+    prompt_message_id = data.get("adsl_prompt_message_id")
+    if prompt_message_id:
+        try:
+            await bot.delete_message(message.chat.id, prompt_message_id)
+        except Exception:
+            pass
 
     adsl_numbers = [x for x in message.text.splitlines() if x.strip()]
 
@@ -668,8 +725,10 @@ async def register_finish(message: types.Message, state: FSMContext):
         # Create a new network and extract its id from the RPC response
         resp_net = await create_network(chat_user_id, data["network_name"])
         network_name = data["network_name"]
+        logger.info("Created network with response 671 : %s", resp_net)
         try:
             network_id = _extract_network_id(resp_net)
+            logger.info("Extracted network_id=%s from response 674", network_id)
         except Exception as e:
             logger.exception("Error processing network creation response: %s", e)
             network_id = None
@@ -679,7 +738,8 @@ async def register_finish(message: types.Message, state: FSMContext):
                 # Fallback: fetch networks list and pick the most recent by name
                 nets = await UserManager.get_networks_for_user(chat_user_id)
                 match = next((n for n in nets if (n.get("network_name") if isinstance(n, dict) else getattr(n, "network_name", "")) == network_name), None)
-                network_id = (match.get("id") if isinstance(match, dict) else getattr(match, "id", None)) if match else None
+                network_id = (match.get("network_id") if isinstance(match, dict) else getattr(match, "network_id", None)) if match else None
+                logger.info("Fallback fetched networks and found 685 network_id=%s for name=%s", network_id, network_name)
             except Exception as e:
                 logger.exception("Error fetching networks for user: %s", e)
                 network_id = None
@@ -692,6 +752,7 @@ async def register_finish(message: types.Message, state: FSMContext):
         # await _notify_admins_network_request(telegram_id, username, network_name, network_id)
     else:
         # Prefer the network chosen during ADSL add flow stored in FSM data
+        logger.info("No new network creation, checking for chosen network in FSM data: chosen_net_id=%s, chosen_net_name=%s", chosen_net_id, chosen_net_name)
         if chosen_net_id:
             network_id = int(chosen_net_id)
             network_name = chosen_net_name or ""
@@ -708,6 +769,7 @@ async def register_finish(message: types.Message, state: FSMContext):
                 await state.clear()
                 return
             network_id = selected_network.network_id
+            logger.info("Using selected network from manager for user_id=%s: network_id=%s", chat_user_id, network_id)
             network_name = selected_network.network_name
 
     username = chat_user.user_name if chat_user else data["user_name"]
@@ -734,14 +796,28 @@ async def register_finish(message: types.Message, state: FSMContext):
 
     successful_adsl_users = summary.get('success', '').split(",") if summary.get('success') else []
 
-    PENDING_ADD_USERS[message.chat.id] = {
-        "user_ids": successful_adsl_users,
-        "network_id": network_id,
-        "adsl_numbers": summary.get('success_adsl', '').split(",") if summary.get('success_adsl') else [],
-        "user_name": username,
-        "network_name": network_name,
-        "admin_msgs": {}
-    }
+    req_id = None
+    try:
+        payload = {
+            "telegram_id": telegram_id,
+            "user_name": username,
+            "network_id": network_id,
+            "network_name": network_name,
+            "adsl_numbers": summary.get('success_adsl', '').split(",") if summary.get('success_adsl') else [],
+            "user_ids": successful_adsl_users,
+            "registration_mode": registration_mode,
+            "is_add_network_request": is_add_network_request,
+        }
+        req_resp = await insert_pending_request_v2(
+            "adsl_add",
+            payload,
+            requester_telegram_id=telegram_id,
+            network_id=network_id,
+        )
+        req_data = getattr(req_resp, "data", None) or []
+        req_id = (req_data[0].get("id") if isinstance(req_data, list) and req_data else None) if req_data else None
+    except Exception:
+        logger.exception("Failed to persist pending ADSL-add request")
 
     # Build user-facing message with fallback to avoid empty text
     failed_adsl_list = summary.get('failed_adsl', '').split(',') if summary.get('failed_adsl') else []
@@ -768,11 +844,16 @@ async def register_finish(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
+    if not req_id:
+        await state.clear()
+        return
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✅ قبول", callback_data=f"approve_{telegram_id}"),
-            InlineKeyboardButton(text="❌ رفض", callback_data=f"reject_{telegram_id}")
-        ]
+            InlineKeyboardButton(text="✅ قبول", callback_data=f"pending:approve:{req_id}"),
+            InlineKeyboardButton(text="⚡ قبول سريع", callback_data=f"pending:quick:{req_id}")
+        ],
+        [InlineKeyboardButton(text="❌ رفض", callback_data=f"pending:reject:{req_id}")]
     ])
 
     admin_targets = ADMIN_IDS or ([ADMIN_ID] if ADMIN_ID else [])
@@ -798,7 +879,7 @@ async def register_finish(message: types.Message, state: FSMContext):
             logger.exception("Failed to notify admin about signup")
     if admin_msgs:
         try:
-            PENDING_ADD_USERS[message.chat.id]["admin_msgs"] = admin_msgs
+            await update_pending_admin_msgs(req_id, admin_msgs)
         except Exception as e:
             logger.exception("Error storing admin messages: %s", e)
 
@@ -826,11 +907,18 @@ async def register_finish_with_names(message: types.Message, state: FSMContext):
     registration_mode = bool(data.get("registration_mode"))
     
     # Block duplicate pending requests for this chat
-    if not registration_mode and _has_pending_request(message.chat.id):
+    if not registration_mode and await has_pending_request(telegram_id, PENDING_REQUEST_TYPES_BLOCKING):
         await message.answer("⚠️ لديك طلب قيد المراجعة حالياً. انتظر قرار الإدارة قبل إرسال طلب جديد.")
         await state.clear()
         await message.delete()
         return
+
+    prompt_message_id = data.get("adsl_prompt_message_id")
+    if prompt_message_id:
+        try:
+            await bot.delete_message(message.chat.id, prompt_message_id)
+        except Exception:
+            pass
     
     chosen_net_id = data.get("selected_network_id")
     chosen_net_name = data.get("selected_network_name")
@@ -922,14 +1010,28 @@ async def register_finish_with_names(message: types.Message, state: FSMContext):
 
     successful_adsl_users = summary.get('success', '').split(",") if summary.get('success') else []
 
-    PENDING_ADD_USERS[message.chat.id] = {
-        "user_ids": successful_adsl_users,
-        "network_id": network_id,
-        "adsl_numbers": summary.get('success_adsl', '').split(",") if summary.get('success_adsl') else [],
-        "user_name": chat_user.user_name if chat_user else data["user_name"],
-        "network_name": network_name,
-        "admin_msgs": {}
-    }
+    req_id = None
+    try:
+        payload = {
+            "telegram_id": telegram_id,
+            "user_name": chat_user.user_name if chat_user else data["user_name"],
+            "network_id": network_id,
+            "network_name": network_name,
+            "adsl_numbers": summary.get('success_adsl', '').split(",") if summary.get('success_adsl') else [],
+            "user_ids": successful_adsl_users,
+            "registration_mode": registration_mode,
+            "is_add_network_request": is_add_network_request,
+        }
+        req_resp = await insert_pending_request_v2(
+            "adsl_add_with_names",
+            payload,
+            requester_telegram_id=telegram_id,
+            network_id=network_id,
+        )
+        req_data = getattr(req_resp, "data", None) or []
+        req_id = (req_data[0].get("id") if isinstance(req_data, list) and req_data else None) if req_data else None
+    except Exception:
+        logger.exception("Failed to persist pending ADSL-add-with-names request")
     # Build user-facing message with fallback to avoid empty text
     failed_adsl_list = summary.get('failed_adsl', '').split(',') if summary.get('failed_adsl') else []
     parts = [
@@ -945,11 +1047,16 @@ async def register_finish_with_names(message: types.Message, state: FSMContext):
         await state.clear()
         return
     
+    if not req_id:
+        await state.clear()
+        return
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✅ قبول", callback_data=f"approve_{telegram_id}"),
-            InlineKeyboardButton(text="❌ رفض", callback_data=f"reject_{telegram_id}")
-        ]
+            InlineKeyboardButton(text="✅ قبول", callback_data=f"pending:approve:{req_id}"),
+            InlineKeyboardButton(text="⚡ قبول سريع", callback_data=f"pending:quick:{req_id}")
+        ],
+        [InlineKeyboardButton(text="❌ رفض", callback_data=f"pending:reject:{req_id}")]
     ])
     admin_targets = ADMIN_IDS or ([ADMIN_ID] if ADMIN_ID else [])
     admin_msgs = {}
@@ -975,7 +1082,7 @@ async def register_finish_with_names(message: types.Message, state: FSMContext):
             logger.exception("Failed to notify admin about signup")
     if admin_msgs:
         try:
-            PENDING_ADD_USERS[message.chat.id]["admin_msgs"] = admin_msgs
+            await update_pending_admin_msgs(req_id, admin_msgs)
         except Exception as e:
             logger.exception("Error storing admin messages: %s", e)
 
@@ -995,13 +1102,19 @@ async def register_finish_with_names(message: types.Message, state: FSMContext):
         return
     await state.clear()
 
-@dp.callback_query(lambda c: c.data.startswith("approve_") and c.data.replace("approve_", "", 1).isdigit())
+@dp.callback_query(lambda c: c.data.startswith("pending:approve:"))
 async def approve_application(call: types.CallbackQuery, state: FSMContext):
-    telegram_id = int(call.data.split("_", 1)[1])
-    data = PENDING_ADD_USERS.get(telegram_id)
-    logger.info("Approving application for telegram_id=%s data=%s", telegram_id, data)
-    if not data:
-        await call.answer("❌ الطلب غير موجود أو انتهت صلاحيته.", show_alert=True)
+    req_id = call.data.split(":", 2)[2]
+    resp = await get_pending_request(req_id)
+    data = getattr(resp, "data", None) or resp
+    request_row = data if isinstance(data, dict) else (data[0] if isinstance(data, list) and data else None)
+    if not request_row:
+        await call.answer("❌ الطلب غير موجود أو تمت معالجته.", show_alert=True)
+        return
+    payload = _normalize_request_payload(request_row)
+    telegram_id = int(payload.get("telegram_id") or request_row.get("requester_telegram_id") or 0)
+    if not telegram_id:
+        await call.answer("❌ بيانات الطلب غير مكتملة.", show_alert=True)
         return
 
     # Remove approve/reject buttons once an admin starts the approval flow
@@ -1013,14 +1126,62 @@ async def approve_application(call: types.CallbackQuery, state: FSMContext):
     await state.set_state(AdminApproveState.choose_expiration_date)
     await state.update_data(
         approval_target_telegram_id=telegram_id,
-        approval_payload=data,
+        approval_payload=payload,
+        approval_request_id=req_id,
         approval_message_text=call.message.text,
         approval_message_chat_id=call.message.chat.id,
         approval_message_id=getattr(call.message, "message_id", None),
     )
 
+    summary = _build_request_summary(payload)
     try:
-        await call.message.answer("📅 اختر مدة التفعيل (1-6 أشهر):", reply_markup=_build_expiration_keyboard())
+        await call.message.answer(
+            f"{summary}\n\n📅 اختر مدة التفعيل (1-6 أشهر):",
+            reply_markup=_build_expiration_keyboard(),
+        )
+    except Exception:
+        logger.exception("Failed to prompt admin for expiration date")
+    await call.answer("📅 اختر مدة التفعيل")
+
+
+@dp.callback_query(lambda c: c.data.startswith("pending:quick:"))
+async def quick_approve_application(call: types.CallbackQuery, state: FSMContext):
+    req_id = call.data.split(":", 2)[2]
+    resp = await get_pending_request(req_id)
+    data = getattr(resp, "data", None) or resp
+    request_row = data if isinstance(data, dict) else (data[0] if isinstance(data, list) and data else None)
+    if not request_row:
+        await call.answer("❌ الطلب غير موجود أو تمت معالجته.", show_alert=True)
+        return
+
+    payload = _normalize_request_payload(request_row)
+    telegram_id = int(payload.get("telegram_id") or request_row.get("requester_telegram_id") or 0)
+    if not telegram_id:
+        await call.answer("❌ بيانات الطلب غير مكتملة.", show_alert=True)
+        return
+
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        logger.exception("Failed to clear approval buttons")
+
+    await state.set_state(AdminApproveState.choose_expiration_date)
+    await state.update_data(
+        approval_target_telegram_id=telegram_id,
+        approval_payload=payload,
+        approval_request_id=req_id,
+        approval_message_text=call.message.text,
+        approval_message_chat_id=call.message.chat.id,
+        approval_message_id=getattr(call.message, "message_id", None),
+        approval_quick=True,
+    )
+
+    summary = _build_request_summary(payload)
+    try:
+        await call.message.answer(
+            f"{summary}\n\n⚡ قبول سريع: اختر مدة التفعيل فقط.",
+            reply_markup=_build_expiration_keyboard(),
+        )
     except Exception:
         logger.exception("Failed to prompt admin for expiration date")
     await call.answer("📅 اختر مدة التفعيل")
@@ -1079,21 +1240,107 @@ async def handle_admin_choose_expiry(call: types.CallbackQuery, state: FSMContex
         approval_suggested_amount=suggested_amount,
         approval_duration_months=months,
     )
+
+    if state_data.get("approval_quick"):
+        target_telegram_id = int(state_data.get("approval_target_telegram_id", 0) or 0)
+        req_id = state_data.get("approval_request_id")
+        if not target_telegram_id or not req_id:
+            await call.answer("❌ بيانات الطلب غير مكتملة.", show_alert=True)
+            await state.clear()
+            return
+
+        admin_tid = str(call.from_user.id)
+        payer = await chat_user_manager.get(admin_tid)
+        if not payer:
+            payer_resp = await create_chat_user(admin_tid, call.from_user.full_name or admin_tid)
+            payer_chat_user_id = payer_resp.data[0]["id"] if getattr(payer_resp, "data", None) else 0
+        else:
+            payer_chat_user_id = getattr(payer, "chat_user_id", 0)
+
+        if not payer_chat_user_id:
+            await call.answer("❌ تعذر تحديد حساب الدافع. حاول مرة أخرى.", show_alert=True)
+            await state.clear()
+            return
+
+        await UserManager.activate_users(payload.get("user_ids", []))
+        is_activated = await UserManager.approve_registration(
+            users_ids=payload.get("user_ids", []),
+            telegram_id=target_telegram_id,
+            payer_chat_user_id=payer_chat_user_id,
+            network_id=payload.get("network_id"),
+            expiration_date=exp_date.isoformat(),
+            amount=None,
+            payment_method=None,
+        )
+
+        if is_activated:
+            try:
+                await update_pending_status(req_id, "approved")
+            except Exception:
+                logger.exception("Failed to update pending request status to approved")
+            try:
+                await chat_user_manager.refresh(str(target_telegram_id))
+            except Exception:
+                logger.exception("Failed to refresh chat user cache")
+
+            try:
+                await bot.send_message(
+                    target_telegram_id,
+                    "✅ تم قبول طلبك من قبل الإدارة.\n"
+                    f"⏳ المدة: {months} شهر\n"
+                    f"📅 تاريخ الانتهاء: {exp_date.isoformat()}\n"
+                    "💳 المبلغ: بدون مبلغ\n"
+                    "💰 طريقة الدفع: بدون دفع",
+                )
+            except Exception:
+                logger.exception("Failed to notify requester about approval")
+
+            base_text = state_data.get("approval_message_text", "")
+            updated_text = (
+                f"{base_text.replace('هل تقبل الطلب؟', '').strip()}\n"
+                "✅ تم قبول الطلب.\n"
+                f"⏳ المدة: {months} شهر\n"
+                f"📅 تاريخ الانتهاء: {exp_date.isoformat()}\n"
+                "💳 المبلغ: بدون مبلغ\n"
+                "💰 طريقة الدفع: بدون دفع"
+            )
+
+            msg_chat_id = state_data.get("approval_message_chat_id")
+            msg_id = state_data.get("approval_message_id")
+            try:
+                if msg_chat_id and msg_id:
+                    await bot.edit_message_text(updated_text, chat_id=msg_chat_id, message_id=msg_id)
+            except Exception:
+                logger.exception("Failed to edit admin approval message")
+
+            await _broadcast_admin_decision(payload.get("admin_msgs", {}), updated_text, exclude_admin_id=call.from_user.id)
+            await call.message.edit_text(
+                f"✅ تم التفعيل (بدون مبلغ).\n⏳ {months} شهر\n📅 {exp_date.isoformat()}"
+            )
+        else:
+            await call.message.edit_text("❌ حدث خطأ أثناء قبول الطلب. حاول مرة أخرى.")
+
+        await state.clear()
+        await call.answer()
+        return
+
     await state.set_state(AdminApproveState.enter_amount)
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=f"استخدام المبلغ المقترح ({suggested_amount})", callback_data=f"approve_use_amount_{suggested_amount}")],
+            [InlineKeyboardButton(text="بدون مبلغ", callback_data="approve_use_amount_0")],
             [InlineKeyboardButton(text="⬅️ تعديل التاريخ", callback_data="approve_change_expiry"), InlineKeyboardButton(text="❌ إلغاء", callback_data="approve_cancel")],
         ]
     )
 
     prompt = (
+        "🧾 إعدادات الدفع\n"
         f"⏳ مدة التفعيل: {months} شهر\n"
         f"📅 تاريخ الانتهاء: {exp_date.isoformat()}\n"
         f"📡 عدد الخطوط: {lines_count}\n"
         f"💵 المبلغ المقترح (200 لكل خط): {suggested_amount}\n"
-        "✏️ أرسل مبلغاً مختلفاً إذا لزم، أو اضغط استخدام المبلغ المقترح."
+        "✏️ أرسل مبلغاً مختلفاً إذا لزم، أو اختر بدون مبلغ."
     )
 
     try:
@@ -1133,12 +1380,13 @@ async def handle_admin_amount(message: types.Message, state: FSMContext):
         inline_keyboard=[
             [InlineKeyboardButton(text="📲 جيب", callback_data="approve_paymethod_جيب"), InlineKeyboardButton(text="🏦 كريمي", callback_data="approve_paymethod_كريمي")],
             [InlineKeyboardButton(text="💸 حوالة محلية", callback_data="approve_paymethod_حوالة محلية"), InlineKeyboardButton(text="💵 نقدي", callback_data="approve_paymethod_نقدي")],
+            [InlineKeyboardButton(text="🚫 بدون دفع", callback_data="approve_paymethod_بدون دفع")],
             [InlineKeyboardButton(text="⬅️ تعديل التاريخ", callback_data="approve_change_expiry"), InlineKeyboardButton(text="❌ إلغاء", callback_data="approve_cancel")],
         ]
     )
 
     await message.answer(
-        f"⏳ المدة: {months} شهر\n📅 تاريخ الانتهاء: {exp_date}\n💵 المبلغ: {amount}\nاختر طريقة الدفع:",
+        f"⏳ المدة: {months} شهر\n📅 تاريخ الانتهاء: {exp_date}\n💵 المبلغ: {amount}\nاختر طريقة الدفع:\n(يمكن اختيار بدون دفع)",
         reply_markup=kb,
     )
 
@@ -1169,18 +1417,19 @@ async def handle_use_suggested_amount(call: types.CallbackQuery, state: FSMConte
         inline_keyboard=[
             [InlineKeyboardButton(text="📲 جيب", callback_data="approve_paymethod_جيب"), InlineKeyboardButton(text="🏦 كريمي", callback_data="approve_paymethod_كريمي")],
             [InlineKeyboardButton(text="💸 حوالة محلية", callback_data="approve_paymethod_حوالة محلية"), InlineKeyboardButton(text="💵 نقدي", callback_data="approve_paymethod_نقدي")],
+            [InlineKeyboardButton(text="🚫 بدون دفع", callback_data="approve_paymethod_بدون دفع")],
             [InlineKeyboardButton(text="⬅️ تعديل التاريخ", callback_data="approve_change_expiry"), InlineKeyboardButton(text="❌ إلغاء", callback_data="approve_cancel")],
         ]
     )
 
     try:
         await call.message.edit_text(
-            f"⏳ المدة: {months} شهر\n📅 تاريخ الانتهاء: {exp_date}\n💵 المبلغ: {amount}\nاختر طريقة الدفع:",
+            f"🧾 تأكيد الدفع\n⏳ المدة: {months} شهر\n📅 تاريخ الانتهاء: {exp_date}\n💵 المبلغ: {amount}\nاختر طريقة الدفع:\n(يمكن اختيار بدون دفع)",
             reply_markup=kb,
         )
     except Exception:
         await call.message.answer(
-            f"⏳ المدة: {months} شهر\n📅 تاريخ الانتهاء: {exp_date}\n💵 المبلغ: {amount}\nاختر طريقة الدفع:",
+            f"🧾 تأكيد الدفع\n⏳ المدة: {months} شهر\n📅 تاريخ الانتهاء: {exp_date}\n💵 المبلغ: {amount}\nاختر طريقة الدفع:\n(يمكن اختيار بدون دفع)",
             reply_markup=kb,
         )
     await call.answer()
@@ -1212,7 +1461,7 @@ async def handle_admin_payment_method(call: types.CallbackQuery, state: FSMConte
     months = _safe_int(state_data.get("approval_duration_months"), 0)
     amount = state_data.get("approval_amount")
 
-    if not target_telegram_id or not payload or not exp_date or not amount:
+    if not target_telegram_id or not payload or not exp_date or amount is None:
         await call.answer("❌ البيانات غير مكتملة.", show_alert=True)
         await state.clear()
         return
@@ -1235,26 +1484,38 @@ async def handle_admin_payment_method(call: types.CallbackQuery, state: FSMConte
         await state.clear()
         return
 
+    amount_value = _safe_int(amount, 0)
+    if amount_value < 0:
+        await call.answer("⚠️ مبلغ غير صالح.", show_alert=True)
+        return
+
     await UserManager.activate_users(payload.get("user_ids", []))
     is_activated = await UserManager.approve_registration(
         users_ids=payload.get("user_ids", []),
         telegram_id=target_telegram_id,
-        network_id=payload.get("network_id"),
         payer_chat_user_id=payer_chat_user_id,
+        network_id=payload.get("network_id"),
         expiration_date=exp_date,
-        amount=int(amount),
+        amount=amount_value,
         payment_method=payment_method,
     )
 
     if is_activated:
-        PENDING_ADD_USERS.pop(target_telegram_id, None)
-        await chat_user_manager.activate_chat_user_in_cache(str(target_telegram_id))
+        req_id = state_data.get("approval_request_id")
+        try:
+            await update_pending_status(req_id, "approved")
+        except Exception:
+            logger.exception("Failed to update pending request status to approved")
+        try:
+            await chat_user_manager.refresh(str(target_telegram_id))
+        except Exception:
+            logger.exception("Failed to refresh chat user cache")
         await bot.send_message(
             target_telegram_id,
             "✅ تم قبول طلبك من قبل الإدارة.\n"
             f"⏳ المدة: {months} شهر\n"
             f"📅 تاريخ الانتهاء: {exp_date}\n"
-            f"💳 المبلغ: {amount}\n"
+            f"💳 المبلغ: {amount_value}\n"
             f"💰 طريقة الدفع: {payment_method}",
         )
 
@@ -1264,7 +1525,7 @@ async def handle_admin_payment_method(call: types.CallbackQuery, state: FSMConte
             f"✅ تم قبول الطلب.\n"
             f"⏳ المدة: {months} شهر\n"
             f"📅 تاريخ الانتهاء: {exp_date}\n"
-            f"💳 المبلغ: {amount}\n"
+            f"💳 المبلغ: {amount_value}\n"
             f"💰 طريقة الدفع: {payment_method}"
         )
 
@@ -1277,8 +1538,9 @@ async def handle_admin_payment_method(call: types.CallbackQuery, state: FSMConte
             logger.exception("Failed to edit admin approval message")
 
         await _broadcast_admin_decision(payload.get("admin_msgs", {}), updated_text, exclude_admin_id=call.from_user.id)
+        status_line = "✅ تم التفعيل وتسجيل الدفع."
         await call.message.edit_text(
-            f"✅ تم التفعيل وتسجيل الدفع.\n⏳ {months} شهر\n📅 {exp_date}\n💵 {amount}\n💰 {payment_method}"
+            f"{status_line}\n⏳ {months} شهر\n📅 {exp_date}\n💵 {amount_value}\n💰 {payment_method}"
         )
     else:
         await call.message.edit_text("❌ حدث خطأ أثناء قبول الطلب. حاول مرة أخرى.")
@@ -1286,22 +1548,42 @@ async def handle_admin_payment_method(call: types.CallbackQuery, state: FSMConte
     await state.clear()
     await call.answer()
 
-@dp.callback_query(lambda c: c.data.startswith("reject_"))
+@dp.callback_query(lambda c: c.data.startswith("pending:reject:"))
 async def reject_application(call: types.CallbackQuery):
-    telegram_id = int(call.data.split("_", 1)[1])
-    data = PENDING_ADD_USERS.pop(telegram_id, None)
-    logger.info("Rejecting application for telegram_id=%s data=%s", telegram_id, data)
-    if not data:
-        await call.answer("❌ الطلب غير موجود أو انتهت صلاحيته.", show_alert=True)
+    req_id = call.data.split(":", 2)[2]
+    resp = await get_pending_request(req_id)
+    data = getattr(resp, "data", None) or resp
+    request_row = data if isinstance(data, dict) else (data[0] if isinstance(data, list) and data else None)
+    if not request_row:
+        await call.answer("❌ الطلب غير موجود أو تمت معالجته.", show_alert=True)
         return
-    await bot.send_message(telegram_id, "❌ تم رفض طلبك من قبل الإدارة.")
+
+    payload = _normalize_request_payload(request_row)
+    telegram_id = payload.get("telegram_id") or request_row.get("requester_telegram_id")
+
+    try:
+        await update_pending_status(req_id, "rejected")
+    except Exception:
+        logger.exception("Failed to update pending request status to rejected")
+
+    try:
+        if telegram_id:
+            await chat_user_manager.refresh(str(telegram_id))
+    except Exception:
+        logger.exception("Failed to refresh chat user cache")
+
+    if telegram_id:
+        await bot.send_message(int(telegram_id), "❌ تم رفض طلبك من قبل الإدارة.")
+
     updated_text = f"{call.message.text.replace('هل تقبل الطلب؟', '')}\n❌ تم رفض الطلب."
     await call.message.edit_text(updated_text)
-    await _broadcast_admin_decision(data.get("admin_msgs", {}) if data else {}, updated_text, exclude_admin_id=call.from_user.id)
+    await _broadcast_admin_decision(payload.get("admin_msgs", {}), updated_text, exclude_admin_id=call.from_user.id)
     await call.answer()
 
 @dp.message(Command("help"))
-async def help_command(message: types.Message) -> None:
+async def help_command(message: types.Message, state: FSMContext) -> None:
+    if await _block_if_active_flow(message, state):
+        return
     lines = [
         "📖 <b>دليل الاستخدام المفصل</b>",
         "",
@@ -1346,6 +1628,8 @@ async def help_command(message: types.Message) -> None:
 
 @dp.message(Command("networks"))
 async def networks_menu(message: types.Message, state: FSMContext):
+    if await _block_if_active_flow(message, state):
+        return
     telegram_id = str(message.chat.id)
     user = await chat_user_manager.get(telegram_id)
     if not user:
@@ -1402,8 +1686,31 @@ async def networks_back_callback(call: types.CallbackQuery, state: FSMContext):
         pass
     await call.answer()
 
+
+async def _get_pending_enable_network_ids(telegram_id: str) -> set[int]:
+    resp = await get_pending_requests_for_requester(telegram_id, ["network_enable"])
+    data = getattr(resp, "data", None) or resp or []
+    rows = [data] if isinstance(data, dict) else (data or [])
+    pending_ids: set[int] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        net_id = row.get("network_id")
+        if net_id is None:
+            payload = row.get("request_payload") or {}
+            if isinstance(payload, dict):
+                net_id = payload.get("network_id")
+        if net_id is not None:
+            try:
+                pending_ids.add(int(net_id))
+            except Exception:
+                continue
+    return pending_ids
+
 @dp.callback_query(F.data == "enable_network_request_list")
 async def enable_network_request_list(call: types.CallbackQuery, state: FSMContext):
+    if await _block_if_active_flow(call, state):
+        return
     telegram_id = str(call.from_user.id)
     user = await chat_user_manager.get(telegram_id)
     if not user:
@@ -1416,7 +1723,7 @@ async def enable_network_request_list(call: types.CallbackQuery, state: FSMConte
         await call.answer("لا توجد شبكات موقوفة لطلب تفعيلها.", show_alert=True)
         return
 
-    pending = set(PENDING_ENABLE_REQUESTS.get(telegram_id, set()))
+    pending = await _get_pending_enable_network_ids(telegram_id)
     rows = []
     for n in inactive:
         nid = n.get("network_id") or n.get("id")
@@ -1440,6 +1747,8 @@ async def enable_network_request_list(call: types.CallbackQuery, state: FSMConte
 
 @dp.callback_query(lambda c: c.data.startswith("enable_network_request_"))
 async def enable_network_request(call: types.CallbackQuery, state: FSMContext):
+    if await _block_if_active_flow(call, state):
+        return
     telegram_id = str(call.from_user.id)
     user = await chat_user_manager.get(telegram_id)
     if not user:
@@ -1452,19 +1761,33 @@ async def enable_network_request(call: types.CallbackQuery, state: FSMContext):
         await call.answer("خطأ في اختيار الشبكة.", show_alert=True)
         return
 
-    pending = set(PENDING_ENABLE_REQUESTS.get(telegram_id, set()))
+    pending = await _get_pending_enable_network_ids(telegram_id)
     if network_id in pending:
         await call.answer("لديك طلب تفعيل قيد المراجعة لهذه الشبكة.", show_alert=True)
         return
 
-    # record pending
-    pending.add(network_id)
-    PENDING_ENABLE_REQUESTS[telegram_id] = pending
+    net_obj = await UserManager.get_network_by_network_id(network_id)
+    net_name = escape_markdown(net_obj.get("network_name") if isinstance(net_obj, dict) else getattr(net_obj, "network_name", "")) if net_obj else ""
+    payload = {
+        "telegram_id": telegram_id,
+        "user_name": user.user_name,
+        "network_id": network_id,
+        "network_name": net_name,
+        "request_text": "طلب تفعيل شبكة",
+    }
+    try:
+        await insert_pending_request_v2(
+            "network_enable",
+            payload,
+            requester_telegram_id=telegram_id,
+            network_id=network_id,
+        )
+    except Exception:
+        logger.exception("Failed to persist pending enable-network request")
 
     # notify admins
     admin_targets = ADMIN_IDS or ([ADMIN_ID] if ADMIN_ID else [])
-    net_obj = await UserManager.get_network_by_network_id(network_id)
-    net_name = escape_markdown(net_obj.get("network_name") if isinstance(net_obj, dict) else getattr(net_obj, "network_name", "")) if net_obj else ""
+    net_name = net_name or ""
     for admin_id in admin_targets:
         try:
             await bot.send_message(
@@ -1494,6 +1817,8 @@ async def noop_callback(call: types.CallbackQuery):
 
 @dp.callback_query(F.data == "network_add")
 async def network_add_cb(call: types.CallbackQuery, state: FSMContext):
+    if await _block_if_active_flow(call, state):
+        return
     telegram_id = str(call.from_user.id)
     user = await chat_user_manager.get(telegram_id)
 
@@ -1503,6 +1828,14 @@ async def network_add_cb(call: types.CallbackQuery, state: FSMContext):
 
     if not user.is_active:
         await call.answer("❌ حسابك غير نشط. يرجى التواصل مع الإدارة.", show_alert=True)
+        return
+
+    if await has_pending_request(telegram_id, PENDING_REQUEST_TYPES_BLOCKING):
+        await call.answer("⚠️ لديك طلب قيد المراجعة حالياً. انتظر قرار الإدارة قبل إرسال طلب جديد.", show_alert=True)
+        return
+
+    if await has_pending_request(telegram_id, PENDING_REQUEST_TYPES_BLOCKING):
+        await call.answer("⚠️ لديك طلب قيد المراجعة حالياً. انتظر قرار الإدارة قبل إرسال طلب جديد.", show_alert=True)
         return
 
     # mark that we're specifically adding a new network so we can validate input later
@@ -1519,7 +1852,7 @@ async def network_add_cb(call: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "cancel_add_network")
 async def cancel_add_network(call: types.CallbackQuery, state: FSMContext):
-    await state.clear()
+    await _clear_user_flow_state(call.from_user.id, state)
     try:
         await call.message.edit_text("⬅️ تم إلغاء عملية إضافة الشبكة.")
     except Exception:
@@ -1584,22 +1917,50 @@ def _safe_int(val, default: int = 0) -> int:
         return default
 
 
-def _has_pending_request(chat_id) -> bool:
-    try:
-        return chat_id in PENDING_ADD_USERS
-    except Exception:
-        return False
+def _normalize_request_payload(request_row: dict) -> dict:
+    payload = request_row.get("request_payload") if isinstance(request_row, dict) else None
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return payload
+
+
+def _build_request_summary(payload: dict) -> str:
+    network_name = payload.get("network_name") or "-"
+    user_name = payload.get("user_name") or "-"
+    telegram_id = payload.get("telegram_id") or "-"
+    lines_count = len(payload.get("adsl_numbers") or payload.get("user_ids") or [])
+    return (
+        "🧾 ملخص الطلب\n"
+        f"👤 المشترك: {user_name}\n"
+        f"📱 التليجرام: {telegram_id}\n"
+        f"🌐 الشبكة: {network_name}\n"
+        f"📡 عدد الخطوط: {lines_count}"
+    )
 
 
 def _extract_network_id(network_resp: Any) -> Optional[int]:
     """Best-effort extractor for network id from various DB response shapes."""
     data = getattr(network_resp, "data", None)
+    # Handle response like [{'create_network_for_chat_user': 163}]
     if isinstance(data, list) and data and isinstance(data[0], dict):
+        # Check for 'create_network_for_chat_user' key
+        if "create_network_for_chat_user" in data[0]:
+            return data[0]["create_network_for_chat_user"]
         return data[0].get("id") or data[0].get("network_id")
     if isinstance(data, dict):
         return data.get("id") or data.get("network_id")
     if isinstance(network_resp, dict):
         return network_resp.get("id") or network_resp.get("network_id")
+    # Handle response like [{'create_network_for_chat_user': 163}]
+    if isinstance(network_resp, list) and network_resp and isinstance(network_resp[0], dict):
+        if "create_network_for_chat_user" in network_resp[0]:
+            return network_resp[0]["create_network_for_chat_user"]
+        return network_resp[0].get("id") or network_resp[0].get("network_id")
     try:
         return int(data)
     except Exception:
@@ -1868,7 +2229,7 @@ async def perform_delete_network(call: types.CallbackQuery, state: FSMContext):
     await call.answer()
 
 @dp.callback_query(F.data == "partners")
-async def partners_menu_cb(call: types.CallbackQuery):
+async def partners_menu_cb(call: types.CallbackQuery, state: FSMContext):
     telegram_id = str(call.from_user.id)
     user = await chat_user_manager.get(telegram_id)
     if not user:
@@ -1893,7 +2254,7 @@ async def partners_menu_cb(call: types.CallbackQuery):
             await selected_network_manager.set(active_networks[0]["id"], user.chat_user_id, telegram_id=telegram_id)
         except Exception:
             pass
-        await partners_command(call.message)
+        await partners_command(call.message, state)
         await call.answer()
         return
 
@@ -1915,7 +2276,7 @@ async def partners_menu_cb(call: types.CallbackQuery):
     await call.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("partners_select_"))
-async def partners_select_cb(call: types.CallbackQuery):
+async def partners_select_cb(call: types.CallbackQuery, state: FSMContext):
     payload = call.data[len("partners_select_"):]
     if "|" in payload:
         network_id_str, network_name = payload.split("|", 1)
@@ -1958,12 +2319,14 @@ async def partners_select_cb(call: types.CallbackQuery):
     except Exception:
         pass
 
-    await partners_command(call.message)
+    await partners_command(call.message, state)
     await call.answer()
 
 
 @dp.message(Command("adsls"))
 async def adsls_menu(message: types.Message, state: FSMContext):
+    if await _block_if_active_flow(message, state):
+        return
     telegram_id = str(message.chat.id)
     user = await chat_user_manager.get(telegram_id)
     if not user:
@@ -2008,6 +2371,8 @@ async def adsls_back_callback(call: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "adsls_add")
 async def adsls_add_cb(call: types.CallbackQuery, state: FSMContext):
+    if await _block_if_active_flow(call, state):
+        return
     telegram_id = str(call.from_user.id)
     user = await chat_user_manager.get(telegram_id)
     if not user:
@@ -2042,6 +2407,8 @@ async def adsls_add_cb(call: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "adsl_file")
 async def adsl_file_cb(call: types.CallbackQuery, state: FSMContext):
+    if await _block_if_active_flow(call, state):
+        return
     telegram_id = str(call.from_user.id)
     user = await chat_user_manager.get(telegram_id)
     if not user:
@@ -2126,7 +2493,7 @@ async def select_network_for_adsls(call: types.CallbackQuery, state: FSMContext)
 
 @dp.callback_query(F.data == "registration_add_more_no")
 async def registration_add_more_no(call: types.CallbackQuery, state: FSMContext):
-    await state.clear()
+    await _clear_user_flow_state(call.from_user.id, state)
     try:
         await call.message.edit_text("✅ تم استلام طلبك. يمكنك إضافة خطوط لاحقاً بعد قبول طلبك من /adsls.")
     except Exception:
@@ -2383,7 +2750,9 @@ def _get_network_permisssions_str(obj: Optional[SelectedNetwork]) -> str:
     return "غير معروف"
 
 @dp.message(Command("account"))
-async def status_command(message: types.Message) -> None:
+async def status_command(message: types.Message, state: FSMContext) -> None:
+    if await _block_if_active_flow(message, state):
+        return
     try:
         token_id = str(message.chat.id)
         chat_user = await chat_user_manager.get(token_id)
@@ -2468,7 +2837,9 @@ async def status_command(message: types.Message) -> None:
 
 
 @dp.message(Command("allusers"))
-async def allusers_command(message: types.Message, command: CommandObject) -> None:
+async def allusers_command(message: types.Message, command: CommandObject, state: FSMContext) -> None:
+    if await _block_if_active_flow(message, state):
+        return
     token_id = str(message.chat.id)
     chat_user = await chat_user_manager.get(token_id)
     if not chat_user:
@@ -2526,7 +2897,9 @@ async def allusers_command(message: types.Message, command: CommandObject) -> No
 
 
 @dp.message(Command("about"))
-async def about_command(message: types.Message) -> None:
+async def about_command(message: types.Message, state: FSMContext) -> None:
+    if await _block_if_active_flow(message, state):
+        return
     await message.answer(
         "🤖 <b>بوت استعلامات يمن نت | إدارة ومراقبة ADSL باحترافية</b>\n\n"
         "منصة موثوقة لملاك ومديري شبكات الانترنت: متابعة لحظية، صلاحيات دقيقة، وتنبيهات مبكرة لحماية الخدمة واستمراريتها.\n\n"
@@ -2563,7 +2936,9 @@ def _build_mysummary_now_keyboard(network):
 
 
 @dp.message(Command("reports"))
-async def mysummary_command(message: types.Message, command: Optional[CommandObject] = None):
+async def mysummary_command(message: types.Message, command: Optional[CommandObject] = None, state: FSMContext = None):
+    if state and await _block_if_active_flow(message, state):
+        return
     token_id = str(message.chat.id)
     chat_user = await chat_user_manager.get(token_id)
     if not chat_user:
@@ -2641,7 +3016,9 @@ async def mysummary_reportdate_cb(call: types.CallbackQuery):
 
 
 @dp.message(Command("reportdate"))
-async def reportdate_command(message: types.Message, command: Optional[CommandObject] = None) -> None:
+async def reportdate_command(message: types.Message, command: Optional[CommandObject] = None, state: FSMContext = None) -> None:
+    if state and await _block_if_active_flow(message, state):
+        return
     """Start an interactive date picker to fetch historical reports from adsl_daily_reports."""
     uid = message.from_user.id
     token_id = str(message.chat.id)
@@ -2850,6 +3227,7 @@ async def _render_datepicker(target, year: int, month: int, available_dates: Opt
 
 async def _run_reportdate_for_scope(message: types.Message, scope: str, report_date: str, selected_network_id: Optional[int] = None):
     picker_message = message
+    uid = message.chat.id
     try:
         token_id = str(message.chat.id)
         chat_user = await chat_user_manager.get(token_id)
@@ -2990,6 +3368,7 @@ async def _run_reportdate_for_scope(message: types.Message, scope: str, report_d
                 except Exception:
                     pass
     finally:
+        reportdate_sessions.pop(uid, None)
         try:
             await picker_message.delete()
         except Exception:
@@ -3399,7 +3778,9 @@ async def _delete_message_after(message: types.Message, seconds: float = 2.0):
         pass
 
 @dp.message(Command("settings"))
-async def settings_handler(message: types.Message):
+async def settings_handler(message: types.Message, state: FSMContext):
+    if await _block_if_active_flow(message, state):
+        return
     telegram_id = str(message.chat.id)
     chat_user = await chat_user_manager.get(telegram_id)
     if not chat_user:
@@ -3734,6 +4115,18 @@ user_report_selections = {}
 user_warning_danger_prefs: dict[int, dict[str, int]] = {}
 # reportdate session cache per user id
 reportdate_sessions: dict[int, dict[str, Any]] = {}
+
+
+async def _clear_user_flow_state(user_id: int, state: Optional[FSMContext] = None) -> None:
+    user_settings_state.pop(user_id, None)
+    user_report_selections.pop(user_id, None)
+    user_warning_danger_prefs.pop(user_id, None)
+    reportdate_sessions.pop(user_id, None)
+    if state:
+        try:
+            await state.clear()
+        except Exception:
+            pass
 
 
 REPORT_TIMES = ["06:00:00", "12:00:00", "18:00:00", "23:50:00"]
@@ -4429,8 +4822,7 @@ async def save_report_times_callback(call: types.CallbackQuery, state: FSMContex
 @dp.callback_query(F.data == "cancel_report_times")
 async def cancel_report_times_callback(call: types.CallbackQuery):
     uid = call.from_user.id
-    user_settings_state.pop(uid, None)
-    user_report_selections.pop(uid, None)
+    await _clear_user_flow_state(uid)
     try:
         await call.message.delete()
     except Exception:
@@ -4451,8 +4843,19 @@ async def networks_menu_callback(call: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "close_settings")
 async def close_settings_callback(call: types.CallbackQuery):
+    await _clear_user_flow_state(call.from_user.id)
     await call.message.delete()
     await call.answer("✅ تم إغلاق الإعدادات")
+
+
+@dp.callback_query(F.data == "cancel_active_flow")
+async def cancel_active_flow_callback(call: types.CallbackQuery, state: FSMContext):
+    await _clear_user_flow_state(call.from_user.id, state)
+    try:
+        await call.message.edit_text("✅ تم إلغاء العملية الحالية.")
+    except Exception:
+        pass
+    await call.answer()
 
 class WarningDangerState(StatesGroup):
     waiting_for_danger_days = State()

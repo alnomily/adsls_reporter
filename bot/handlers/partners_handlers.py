@@ -12,6 +12,7 @@ from bot.app import dp
 from bot.user_manager import UserManager
 from bot.selected_network_manager import SelectedNetwork, selected_network_manager
 from bot.chat_user_manager import chat_user_manager
+from bot.utils import block_if_active_flow
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,9 @@ async def build_partners_view(network, partners):
 # /partners
 # =========================
 @dp.message(Command("partners"))
-async def partners_command(message: types.Message):
+async def partners_command(message: types.Message, state: FSMContext):
+    if await block_if_active_flow(message, state):
+        return
     telegram_id = str(message.chat.id)
 
     chat_user = await chat_user_manager.get(telegram_id)

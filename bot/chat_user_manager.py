@@ -130,6 +130,12 @@ class ChatUserManager:
             self._chat_users[telegram_id] = chat_user
             logger.info(f"Activated chat user in cache for {telegram_id}")
             return True
+
+    async def refresh(self, telegram_id: str) -> Optional[ChatUser]:
+        async with self._lock:
+            if telegram_id in self._chat_users:
+                del self._chat_users[telegram_id]
+        return await self.get(telegram_id)
     
     async def deactivate_chat_user(self, telegram_id: str) -> bool:
         async with self._lock:

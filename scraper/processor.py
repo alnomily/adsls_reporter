@@ -6,6 +6,10 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, Optional
 
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 from .session import get_session
 from .utils import (
     extract_form_inputs,
@@ -27,11 +31,81 @@ CAPTCHA_TIMEOUT = 25
 MAX_ATTEMPTS = 3
 THREADS = max(2, min(64, (os.cpu_count() or 4) * 2))
 HTTP_POOL_SIZE = 20
+SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", "86400")) 
 
 # Predictor globals
 _global_predictor = None
 _predictor_init_lock = threading.Lock()
 _predict_lock = threading.Lock()
+
+_user_sessions: Dict[str, requests.Session] = {}
+_user_session_last_used: Dict[str, float] = {}
+_user_sessions_lock = threading.RLock()
+
+
+def _create_user_session(pool_size: int = HTTP_POOL_SIZE, retries: int = 2, backoff: float = 0.5) -> requests.Session:
+    session = requests.Session()
+    session.headers.update({"User-Agent": "Mozilla/5.0 (compatible; YemenNetScraper/1.0)"})
+    session.trust_env = False
+    retry = Retry(
+        total=retries,
+        backoff_factor=backoff,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset(["GET", "POST"]),
+    )
+    adapter = HTTPAdapter(pool_connections=pool_size, pool_maxsize=pool_size, max_retries=retry)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
+def _get_user_session(username: str) -> requests.Session:
+    with _user_sessions_lock:
+        now = time.time()
+        _cleanup_user_sessions(now)
+        session = _user_sessions.get(username)
+        # logger.info("Session for user %s: %s", username, "exists" if session else "not found")
+        # logger.info("Current active sessions: %s", list(_user_sessions.keys()))
+        if session is None:
+            session = _create_user_session()
+            _user_sessions[username] = session
+            # logger.info("Created new session for user %s", username)
+        _user_session_last_used[username] = now
+        return session
+
+
+def _cleanup_user_sessions(now: Optional[float] = None) -> None:
+    if SESSION_TTL_SECONDS <= 0:
+        return
+    with _user_sessions_lock:
+        ts = now if now is not None else time.time()
+        # logger.info("Cleaning up user sessions at %s", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)))
+        expired = [
+            username
+            for username, last_used in _user_session_last_used.items()
+            if (ts - last_used) > SESSION_TTL_SECONDS
+        ]
+        # logger.info("Found %d expired sessions: %s", len(expired), expired)
+        for username in expired:
+            session = _user_sessions.pop(username, None)
+            _user_session_last_used.pop(username, None)
+            if session is not None:
+                try:
+                    session.close()
+                    # logger.info("Closed expired session for user %s", username)
+                except Exception:
+                    logger.debug("Failed to close expired session for %s", username, exc_info=True)
+
+
+def _try_account_from_session(session: requests.Session) -> Optional[Dict[str, Any]]:
+    try:
+        r = session.get("https://adsl.yemen.net.ye/ar/login.aspx", timeout=CAPTCHA_TIMEOUT)
+        r.raise_for_status()
+        acc = extract_account_data(r.text)
+        # logger.info("Account data from session: %s", acc)
+        return acc if acc else None
+    except Exception:
+        return None
 
 
 def get_predictor(model_path: str) -> PredictImageAPI:
@@ -54,18 +128,23 @@ def process_user(user_data: Dict[str, Any], model_path: str) -> bool:
     username = user_data["username"]
     password = user_data["password"]
 
-    session = get_session(pool_size=HTTP_POOL_SIZE)
-    try:
-        session.cookies.clear()
-        session.headers.pop("Cookie", None)
-    except Exception:
-        logger.debug("Failed to clear session cookies/headers", exc_info=True)
+    session = _get_user_session(username)
 
     predictor = get_predictor(model_path)
 
     backoff = REQUEST_DELAY
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
+            acc = _try_account_from_session(session)
+            if acc:
+                if save_account_data_rpc(user_id, acc):
+                    logger.info("Successfully fetched account data for user %s on attempt %s without captcha", username, attempt)
+                    insert_log(user_id, "success")
+                    add_log(f"[OK] {username}")
+                    logger.info("[OK] %s", username)
+                    time.sleep(REQUEST_DELAY)
+                    return True
+
             r1 = session.get("https://adsl.yemen.net.ye/ar/login.aspx", timeout=CAPTCHA_TIMEOUT)
             r1.raise_for_status()
 
@@ -90,6 +169,16 @@ def process_user(user_data: Dict[str, Any], model_path: str) -> bool:
 
             post1 = session.post("https://adsl.yemen.net.ye/ar/login.aspx", data=form1, timeout=CAPTCHA_TIMEOUT)
             post1.raise_for_status()
+
+            acc = extract_account_data(post1.text)
+            if acc:
+                if save_account_data_rpc(user_id, acc):
+                    insert_log(user_id, "success")
+                    add_log(f"[OK] {username}")
+                    logger.info("Successfully fetched account data for user %s on attempt %s", username, attempt)
+                    logger.info("[OK] %s", username)
+                    time.sleep(REQUEST_DELAY)
+                    return True
 
             soup2 = __import__('bs4').BeautifulSoup(post1.text, 'html.parser')
             cap_input = soup2.find("input", {"name": "ctl00$ContentPlaceHolder1$capres"})
@@ -134,6 +223,7 @@ def process_user(user_data: Dict[str, Any], model_path: str) -> bool:
                 if save_account_data_rpc(user_id, acc):
                     insert_log(user_id, "success")
                     add_log(f"[OK] {username}")
+                    logger.info("Successfully fetched account data for user %s on attempt %s", username, attempt)
                     logger.info("[OK] %s", username)
                     time.sleep(REQUEST_DELAY)
                     return True

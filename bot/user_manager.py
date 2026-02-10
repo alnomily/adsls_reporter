@@ -206,7 +206,7 @@ class UserManager:
         return await set_selected_network(chat_network_id, chat_user_id)
 
     @staticmethod
-    async def get_selected_network(telegram_id: str) -> Optional[tuple[int, str, str, int, str, int, int, int, int, bool, str, str, int, str, str]]:
+    async def get_selected_network(telegram_id: str) -> Optional[tuple[int,int, str, str, int, str, int, int, int, int, bool, str, str, int, str, str]]:
         try:
             resp = await get_selected_network(telegram_id)
             logger.info(f"get_selected_network response for telegram_id {telegram_id}: {resp}")
@@ -634,8 +634,8 @@ class UserManager:
     async def approve_registration(
         users_ids: list,
         telegram_id: str,
-        network_id: int,
         payer_chat_user_id: int,
+        network_id: int,
         expiration_date: str,
         amount: int,
         payment_method: str,
@@ -644,8 +644,8 @@ class UserManager:
             result = await approve_registration(
                 users_ids,
                 telegram_id,
-                network_id,
                 payer_chat_user_id,
+                network_id,
                 expiration_date,
                 amount,
                 payment_method,

@@ -3,15 +3,18 @@ import logging
 from aiogram import types
 from aiogram.filters import Command, CommandObject
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.context import FSMContext
 
 from bot.app import dp, bot
-from bot.state import PENDING_ADD_USERS
+from bot.utils import block_if_active_flow
 from bot.utils_shared import insert_pending_request
 from bot.selected_network_manager import selected_network_manager
 from config import ADMIN_ID, ADMIN_IDS
 
 
 logger = logging.getLogger(__name__)
+
+ADDUSERS_SESSIONS: dict[int, dict] = {}
 
 def get_action_keyboard(chat_id, step="confirm"):
     if step == "confirm":
@@ -31,7 +34,9 @@ def get_action_keyboard(chat_id, step="confirm"):
     return None
 
 @dp.message(Command("addusers"))
-async def add_users_request_command(message: types.Message, command: CommandObject):
+async def add_users_request_command(message: types.Message, command: CommandObject, state: FSMContext):
+    if await block_if_active_flow(message, state):
+        return
     token_id = str(message.chat.id)
     network = await selected_network_manager.get(token_id)
     if not network:
@@ -67,7 +72,7 @@ async def add_users_request_command(message: types.Message, command: CommandObje
         return
 
     # Start interactive flow (no args)
-    PENDING_ADD_USERS[message.chat.id] = {
+    ADDUSERS_SESSIONS[message.chat.id] = {
         "step": "username",
         "entries": [],
         "current": {}
@@ -92,7 +97,7 @@ async def addusers_action_callback(callback: types.CallbackQuery):
         await callback.answer("هذا الزر مخصص لصاحب الجلسة فقط.", show_alert=True)
         return
 
-    state = PENDING_ADD_USERS.get(chat_id)
+    state = ADDUSERS_SESSIONS.get(chat_id)
     if not state:
         await callback.answer("لا توجد عملية نشطة.", show_alert=True)
         return
@@ -105,7 +110,7 @@ async def addusers_action_callback(callback: types.CallbackQuery):
         return
 
     if action == "cancel":
-        PENDING_ADD_USERS.pop(chat_id, None)
+        ADDUSERS_SESSIONS.pop(chat_id, None)
         try:
             await callback.message.edit_text(callback.message.text + "\n\n❌ تم إلغاء العملية.", reply_markup=None)
         except Exception:
@@ -148,7 +153,7 @@ async def addusers_action_callback(callback: types.CallbackQuery):
             logger.exception("Error saving addusers request (interactive): %s", e)
             await bot.send_message(chat_id, "❌ فشل إرسال الطلب. يرجى المحاولة لاحقاً.")
         finally:
-            PENDING_ADD_USERS.pop(chat_id, None)
+            ADDUSERS_SESSIONS.pop(chat_id, None)
             await callback.answer("تم الإرسال.")
         return
 
@@ -157,7 +162,7 @@ async def interactive_addusers_handler(message: types.Message):
     if not message.text or message.text.startswith("/"):
         return
 
-    state = PENDING_ADD_USERS.get(message.chat.id)
+    state = ADDUSERS_SESSIONS.get(message.chat.id)
     if not state:
         return
 
@@ -190,7 +195,7 @@ async def interactive_addusers_handler(message: types.Message):
 
     except Exception as e:
         logger.exception("interactive addusers handler error: %s", e)
-        PENDING_ADD_USERS.pop(message.chat.id, None)
+        ADDUSERS_SESSIONS.pop(message.chat.id, None)
         await message.answer("❌ حدث خطأ. تم إلغاء العملية.")
 
 @dp.callback_query(lambda c: c.data and (c.data.startswith("approve_") or c.data.startswith("reject_")))

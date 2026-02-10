@@ -1,6 +1,10 @@
 import re
 from datetime import datetime, timezone
 from typing import Any, Optional, Dict, List, Tuple
+
+from aiogram import types
+from aiogram.fsm.context import FSMContext
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from zoneinfo import ZoneInfo
 
 
@@ -181,6 +185,115 @@ def format_all_users_summary(users_data: List[Tuple[str, Dict[str, Any]]]) -> st
     ]
     footer = ["", f"💰 إجمالي الرصيد المتاح: {total_balance:,.2f} جيجابايت"]
     return "\n".join(header + formatted_lines + footer)
+
+
+def _describe_active_flow(user_id: Optional[int], state_name: Optional[str]) -> str:
+    if state_name:
+        if "RegisterState:name" in state_name:
+            return "تسجيل الحساب: إدخال الاسم"
+        if "RegisterState:network" in state_name:
+            return "إضافة شبكة: إدخال اسم الشبكة"
+        if "RegisterState:adsl" in state_name:
+            return "إضافة ADSL: إدخال الأرقام"
+        if "RegisterState:adsl_with_name" in state_name:
+            return "إضافة ADSL: إدخال الأرقام مع الأسماء"
+        if "RegisterState:choose_old_network" in state_name:
+            return "نقل ADSL: اختيار شبكة المصدر"
+        if "RegisterState:choose_adsls_to_move" in state_name:
+            return "نقل ADSL: اختيار الخطوط"
+        if "AdminApproveState" in state_name or "AdminRequestState" in state_name:
+            return "اعتماد طلب (لوحة الإدارة)"
+
+    if user_id is not None:
+        try:
+            from bot.handlers import user_handlers
+            state_hint = user_handlers.user_settings_state.get(user_id)
+            if state_hint:
+                if str(state_hint).startswith("awaiting_adsl_order_index_"):
+                    return "إعدادات: تعديل ترتيب ADSL"
+                if state_hint == "awaiting_network_name":
+                    return "إعدادات: تعديل اسم الشبكة"
+                if state_hint == "awaiting_report_times":
+                    return "إعدادات: تعديل مواعيد التقارير"
+                if state_hint in (
+                    "awaiting_warning_days",
+                    "awaiting_danger_days",
+                    "awaiting_warning_balance",
+                    "awaiting_danger_balance",
+                ):
+                    return "إعدادات: التحذير والخطر"
+                return "إعدادات المستخدم"
+            if user_handlers.reportdate_sessions.get(user_id):
+                return "التقارير التاريخية: اختيار التاريخ"
+        except Exception:
+            pass
+
+        try:
+            from bot.handlers import interactive_handlers
+            if interactive_handlers.ADDUSERS_SESSIONS.get(user_id):
+                return "إضافة خطوط النت (جلسة /addusers)"
+        except Exception:
+            pass
+
+    return "عملية غير مكتملة"
+
+
+async def block_if_active_flow(target: types.Message | types.CallbackQuery, state: FSMContext) -> bool:
+    current_state = await state.get_state()
+    if not current_state:
+        current_state = None
+
+    user_id = None
+    try:
+        if isinstance(target, types.CallbackQuery):
+            user_id = target.from_user.id
+        else:
+            user_id = target.from_user.id if target.from_user else target.chat.id
+    except Exception:
+        user_id = None
+
+    has_non_fsm_flow = False
+    if user_id is not None:
+        try:
+            from bot.handlers import user_handlers
+            if user_handlers.user_settings_state.get(user_id):
+                has_non_fsm_flow = True
+            elif user_handlers.reportdate_sessions.get(user_id):
+                has_non_fsm_flow = True
+        except Exception:
+            pass
+
+        try:
+            from bot.handlers import interactive_handlers
+            if interactive_handlers.ADDUSERS_SESSIONS.get(user_id):
+                has_non_fsm_flow = True
+        except Exception:
+            pass
+
+    if not current_state and not has_non_fsm_flow:
+        return False
+
+    flow_label = _describe_active_flow(user_id, current_state)
+    text = (
+        "⚠️ لديك عملية قيد التنفيذ.\n"
+        f"🔎 العملية الحالية: {flow_label}\n"
+        "يمكنك إكمالها أو إلغائها من الزر أدناه."
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="❌ إلغاء العملية", callback_data="cancel_active_flow")]]
+    )
+    if isinstance(target, types.CallbackQuery):
+        try:
+            await target.answer()
+        except Exception:
+            pass
+        try:
+            await target.message.answer(text, reply_markup=kb)
+        except Exception:
+            pass
+    else:
+        await target.answer(text, reply_markup=kb)
+    return True
 
 
 class BotUtils:
