@@ -682,6 +682,171 @@ def process_all_adsls_with_usernames(
         "results": results,
     }
 
+def process_adsl_range_to_accounts2(
+    start_adsl: int,
+    end_adsl: int,
+    network_id: int,
+    model_path: str,
+    max_workers: int = 6,
+    save_account_data: bool = False,
+) -> dict:
+    """
+    Process ADSL numbers in a numeric range and insert valid accounts into users_accounts2.
+
+    Returns summary:
+    {
+        success: str,          # comma-separated user_ids
+        success_adsl: str,     # comma-separated adsl numbers
+        failed: int,
+        failed_adsl: str,      # comma-separated adsl numbers
+        failure_reasons: dict, # adsl -> reason
+        results: list          # per-adsl result objects
+    }
+    """
+    from bot.utils_shared import sync_insert_user_account2, sync_users_exists_accounts2
+
+    if end_adsl < start_adsl:
+        start_adsl, end_adsl = end_adsl, start_adsl
+
+    predictor = get_predictor(model_path)
+    results = []
+    success = 0
+    failed = 0
+    password = "123456"
+    successful_users_ids = []
+    successful_adsl = []
+    failed_adsl = []
+    failure_reasons = {}
+
+    adsl_numbers = [str(n) for n in range(start_adsl, end_adsl + 1)]
+    try:
+        existing_resp = sync_users_exists_accounts2(adsl_numbers)
+        existing_data = getattr(existing_resp, "data", None) or []
+        if isinstance(existing_data, list):
+            existing_users = [item.get("adsl_number") for item in existing_data if isinstance(item, dict)]
+        elif isinstance(existing_data, str):
+            existing_users = [existing_data]
+        elif isinstance(existing_data, dict):
+            existing_users = [existing_data.get("adsl_number")]
+        else:
+            existing_users = []
+    except Exception as exc:
+        logger.exception("Range processing aborted before start: %s", exc)
+        failure_reasons["__error__"] = "users_accounts2 table missing or unavailable"
+        return {
+            "success": "",
+            "success_adsl": "",
+            "failed": 0,
+            "failed_adsl": "",
+            "failure_reasons": failure_reasons,
+            "results": results,
+        }
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {
+            executor.submit(
+                process_single_adsl,
+                adsl,
+                password,
+                predictor,
+            ): adsl
+            for adsl in adsl_numbers if adsl not in existing_users
+        }
+
+        for future in as_completed(future_map):
+            result = future.result()
+            adsl_key = str(result["adsl"])
+            results.append(result)
+            logger.info("Processed ADSL %s: %s", adsl_key, "success" if result["success"] else "failed")
+            logger.debug("Result details: %s", result)
+
+            if not result["success"]:
+                failed_adsl.append(adsl_key)
+                failed += 1
+                failure_reasons.setdefault(adsl_key, result.get("error") or "login_failed")
+                continue
+
+            account_data = result.get("account_data") or {}
+            plan_value = (account_data.get("plan") or "").strip()
+            if "فيبـر نت" not in plan_value:
+                failure_reasons[adsl_key] = "plan_not_allowed"
+                failed_adsl.append(adsl_key)
+                failed += 1
+                continue
+
+            user_id = sync_insert_user_account2(
+                result["resolved_username"],
+                password,
+                network_id,
+                str(result["adsl"]),
+                account_data,
+            )
+
+            if isinstance(user_id, str) and user_id.lower() == "duplicate":
+                failure_reasons[adsl_key] = "المستخدم موجود مسبقاً"
+                failed_adsl.append(adsl_key)
+                failed += 1
+                logger.info("ADSL %s insertion skipped (duplicate username)", adsl_key)
+                continue
+
+            if not user_id:
+                failure_reasons[adsl_key] = "فشل في إدخال المستخدم"
+                failed_adsl.append(adsl_key)
+                failed += 1
+                logger.info("ADSL %s insertion failed", adsl_key)
+                continue
+
+            if save_account_data and save_account_data_rpc(user_id, result["account_data"]):
+                insert_log(user_id, "success")
+            elif save_account_data:
+                insert_log(user_id, "fail", "rpc_failed")
+
+            successful_users_ids.append(user_id)
+            successful_adsl.append(adsl_key)
+            success += 1
+
+    logger.info("Existing users detected (users_accounts2): %s", existing_users)
+    for adsl in existing_users:
+        failure_reasons[adsl] = "المستخدم موجود مسبقاً"
+
+    return {
+        "success": ",".join(successful_users_ids),
+        "success_adsl": ",".join(successful_adsl),
+        "failed": failed,
+        "failed_adsl": ",".join(failed_adsl),
+        "failure_reasons": failure_reasons,
+        "results": results,
+    }
+
+def start_process_adsl_range_to_accounts2_background(
+    start_adsl: int,
+    end_adsl: int,
+    network_id: int,
+    model_path: str,
+    max_workers: int = 6,
+    save_account_data: bool = False,
+) -> threading.Thread:
+    """Run range processing in a background thread and return the thread handle."""
+    thread = threading.Thread(
+        target=process_adsl_range_to_accounts2,
+        kwargs={
+            "start_adsl": start_adsl,
+            "end_adsl": end_adsl,
+            "network_id": network_id,
+            "model_path": model_path,
+            "max_workers": max_workers,
+            "save_account_data": save_account_data,
+        },
+        daemon=True,
+    )
+    thread.start()
+    logger.info(
+        "Started background range processing for %s-%s (users_accounts2)",
+        start_adsl,
+        end_adsl,
+    )
+    return thread
+
 def fetch_users(model_path: str, threads: int = None) -> Dict[str, bool]:
     users = fetch_active_users()
     if not users:

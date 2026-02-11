@@ -71,7 +71,7 @@ async def periodic_sync() -> None:
 
 async def periodic_all_users_refresh() -> None:
     await asyncio.sleep(5)
-    interval = max(10, int(os.getenv("ALL_USERS_REFRESH_INTERVAL", "60")))
+    interval = max(10, int(os.getenv("ALL_USERS_REFRESH_INTERVAL", "3600")))
     sem_users = asyncio.Semaphore(24)
 
     async def _run_refresh() -> None:

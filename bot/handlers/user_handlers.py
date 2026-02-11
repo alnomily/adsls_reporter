@@ -28,7 +28,11 @@ from bot.utils_shared import (
     get_pending_requests_for_requester,
 )
 from config import ADMIN_ID, ADMIN_IDS
-from scraper.runner import process_all_adsls, process_all_adsls_with_usernames
+from scraper.runner import (
+    process_all_adsls,
+    process_all_adsls_with_usernames,
+    start_process_adsl_range_to_accounts2_background,
+)
 from scraper.utils import add_log
 
 LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
@@ -1625,6 +1629,54 @@ async def help_command(message: types.Message, state: FSMContext) -> None:
         "• تأكد من صلاحياتك (مالك/شريك قراءة أو كتابة) قبل محاولة نقل أو حذف الخطوط.",
     ]
     await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@dp.message(Command("adslrange2"))
+async def adslrange2_command(message: types.Message, command: CommandObject, state: FSMContext) -> None:
+    if not BotUtils.is_admin(message.from_user.id):
+        await message.answer("⛔ غير مسموح")
+        return
+    if await _block_if_active_flow(message, state):
+        return
+
+    args = (command.args or "").split()
+    if len(args) < 3:
+        await message.answer(
+            "❗ الاستخدام: /adslrange2 <start> <end> <network_id> [threads] [save]\n"
+            "مثال: /adslrange2 1479183 1483183 5 6 save"
+        )
+        return
+
+    try:
+        start_adsl = int(args[0])
+        end_adsl = int(args[1])
+        network_id = int(args[2])
+    except Exception:
+        await message.answer("❗ المدخلات غير صحيحة. تأكد من الأرقام ثم حاول مرة أخرى.")
+        return
+
+    max_workers = 6
+    if len(args) >= 4:
+        try:
+            max_workers = int(args[3])
+        except Exception:
+            max_workers = 6
+
+    save_account_data = any(a.lower() in {"save", "1", "true", "yes"} for a in args[4:])
+
+    start_process_adsl_range_to_accounts2_background(
+        start_adsl=start_adsl,
+        end_adsl=end_adsl,
+        network_id=network_id,
+        max_workers=max_workers,
+        save_account_data=save_account_data,
+    )
+
+    await message.answer(
+        f"✅ تم بدء معالجة النطاق {start_adsl}-{end_adsl} بالخلفية.\n"
+        f"🧵 عدد الثريدات: {max_workers}\n"
+        f"💾 حفظ بيانات الحساب: {'نعم' if save_account_data else 'لا'}"
+    )
 
 @dp.message(Command("networks"))
 async def networks_menu(message: types.Message, state: FSMContext):

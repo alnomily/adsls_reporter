@@ -33,6 +33,9 @@ from bot.utils_shared import (
     update_pending_status,
     create_chat_user,
     count_pending_requests,
+    get_users_accounts2,
+    search_users_accounts2_by_account_name,
+    count_users_accounts2_by_account_name,
 )
 from config import ADMIN_ID, ADMIN_IDS
 
@@ -42,6 +45,7 @@ logger.info("admin_handlers module loaded and handlers registered")
 PAGE_SIZE_CHATS = 20
 PAGE_SIZE_NETWORKS = 20
 PAGE_SIZE_REQUESTS = 20
+PAGE_SIZE_ACCOUNTS2 = 20
 PAYMENT_METHOD_OPTIONS = ["جيب", "كريمي", "حوالة محلية", "نقدي", "بدون دفع"]
 
 # Global cache for chat users to avoid repeated fetches during pagination flows
@@ -53,6 +57,8 @@ _CHAT_PAGE_STATE = {"activate": 0, "deactivate": 0}
 _NETWORK_PAGE_STATE = {"activate": 0, "deactivate": 0}
 _REQUEST_PAGE_STATE = {"pending": 0}
 _REQUEST_FILTER_STATE = {"status": "pending", "type": "all"}
+_ACCOUNTS2_PAGE_STATE = {"list": 0, "search": 0}
+_ACCOUNTS2_SEARCH_QUERY: Optional[str] = None
 
 # Global cache for networks
 _CACHED_NETWORKS: Optional[list] = None
@@ -115,6 +121,7 @@ def _reset_page_state() -> None:
     _NETWORK_PAGE_STATE.update({"activate": 0, "deactivate": 0})
     _REQUEST_PAGE_STATE.update({"pending": 0})
     _REQUEST_FILTER_STATE.update({"status": "pending", "type": "all"})
+    _ACCOUNTS2_PAGE_STATE.update({"list": 0, "search": 0})
 
 
 # =========================
@@ -124,6 +131,7 @@ class AdminState(StatesGroup):
     add_user_username = State()
     add_user_password = State()
     add_user_adsl = State()
+    accounts2_search = State()
 
 
 class AdminRequestState(StatesGroup):
@@ -153,6 +161,7 @@ def _build_admin_menu_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📡 تفعيل شبكة", callback_data="admin:network:activate"),
          InlineKeyboardButton(text="📴 إيقاف شبكة", callback_data="admin:network:deactivate")],
         [InlineKeyboardButton(text="🧾 الطلبات", callback_data="admin:requests")],
+        [InlineKeyboardButton(text="🔎 بحث خطوط accounts2", callback_data="admin:accounts2")],
         [InlineKeyboardButton(text="📊 إحصائيات", callback_data="admin:stats"),
          InlineKeyboardButton(text="🔄 مزامنة", callback_data="admin:sync")],
         [InlineKeyboardButton(text="❌ إغلاق", callback_data="admin:close")],
@@ -180,6 +189,105 @@ def _get_request_filters() -> dict:
         "status": _REQUEST_FILTER_STATE.get("status", "pending"),
         "type": _REQUEST_FILTER_STATE.get("type", "all"),
     }
+
+
+def _set_accounts2_page(action: str, page: int) -> None:
+    _ACCOUNTS2_PAGE_STATE[action] = max(0, page)
+
+
+def _get_accounts2_page(action: str) -> int:
+    return max(0, _ACCOUNTS2_PAGE_STATE.get(action, 0))
+
+
+def _set_accounts2_search_query(query: Optional[str]) -> None:
+    global _ACCOUNTS2_SEARCH_QUERY
+    _ACCOUNTS2_SEARCH_QUERY = query
+
+
+def _get_accounts2_search_query() -> Optional[str]:
+    return _ACCOUNTS2_SEARCH_QUERY
+
+
+def _build_accounts2_menu_kb() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="📋 عرض الكل", callback_data="admin:accounts2:list"),
+         InlineKeyboardButton(text="🔎 بحث بالاسم", callback_data="admin:accounts2:search")],
+        [InlineKeyboardButton(text="⬅️ رجوع", callback_data="admin:menu")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _format_accounts2_row(row: dict) -> str:
+    account_name = row.get("account_name") or "-"
+    adsl_number = row.get("adsl_number") or "-"
+    plan = row.get("plan") or "-"
+    status = row.get("status") or "-"
+    return f"• {account_name} | {adsl_number} | {plan} | {status}"
+
+
+async def _show_accounts2_list(
+    message: types.Message,
+    page: int,
+    search_query: Optional[str] = None,
+    use_edit: bool = True,
+) -> None:
+    limit = PAGE_SIZE_ACCOUNTS2
+    offset = page * limit
+
+    if search_query:
+        resp = await search_users_accounts2_by_account_name(search_query, limit=limit, offset=offset)
+        count_resp = await count_users_accounts2_by_account_name(search_query)
+    else:
+        resp = await get_users_accounts2(limit=limit, offset=offset)
+        count_resp = await count_users_accounts2_by_account_name()
+
+    rows_data = getattr(resp, "data", []) or []
+    total = getattr(count_resp, "count", 0) or 0
+
+    if total == 0:
+        kb = _build_accounts2_menu_kb()
+        text = "❌ لا توجد نتائج."
+        if use_edit:
+            await safe_edit_text(message, text, kb, markdown=False)
+        else:
+            await message.answer(text, reply_markup=kb)
+        return
+
+    page = max(page, 0)
+    if page * limit >= total:
+        page = max((total - 1) // limit, 0)
+
+    action = "search" if search_query else "list"
+    _set_accounts2_page(action, page)
+
+    total_pages = max((total + limit - 1) // limit, 1)
+    current_page_display = page + 1
+
+    lines = [
+        f"📋 accounts2 — العدد: {total}{f' • الصفحة {current_page_display}/{total_pages}' if total_pages > 1 else ''}",
+    ]
+    if search_query:
+        lines.append(f"🔎 البحث: {search_query}")
+    lines.append("〰️")
+    lines.extend([_format_accounts2_row(r) for r in rows_data])
+
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton(text=f"⬅️ السابق ({page})", callback_data=f"admin:accounts2:{action}:page:{page-1}"))
+    if (page + 1) * limit < total:
+        nav_row.append(InlineKeyboardButton(text=f"التالي ({page+2}) ➡️", callback_data=f"admin:accounts2:{action}:page:{page+1}"))
+
+    rows = []
+    if nav_row:
+        rows.append(nav_row)
+    rows.append([InlineKeyboardButton(text="⬅️ رجوع", callback_data="admin:accounts2")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+
+    text = "\n".join(lines)
+    if use_edit:
+        await safe_edit_text(message, text, kb, markdown=False)
+    else:
+        await message.answer(text, reply_markup=kb)
 
 
 def _normalize_request_payload(request_row: dict) -> dict:
@@ -400,6 +508,82 @@ async def admin_command(message: types.Message):
         return
     kb = _build_admin_menu_kb()
     await message.answer(_admin_menu_text(), reply_markup=kb, parse_mode="Markdown")
+
+
+# =========================
+# Accounts2 management
+# =========================
+@dp.callback_query(F.data == "admin:accounts2")
+async def admin_accounts2_menu(call: types.CallbackQuery):
+    if not BotUtils.is_admin(call.from_user.id):
+        await call.answer("⛔ غير مسموح", show_alert=True)
+        return
+    _set_accounts2_search_query(None)
+    kb = _build_accounts2_menu_kb()
+    await safe_edit_text(call.message, "📋 إدارة users_accounts2", kb, markdown=False)
+    await call.answer()
+
+
+@dp.callback_query(F.data == "admin:accounts2:list")
+async def admin_accounts2_list(call: types.CallbackQuery):
+    if not BotUtils.is_admin(call.from_user.id):
+        await call.answer("⛔ غير مسموح", show_alert=True)
+        return
+    _set_accounts2_search_query(None)
+    await _show_accounts2_list(call.message, 0, search_query=None, use_edit=True)
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("admin:accounts2:list:page:"))
+async def admin_accounts2_list_page(call: types.CallbackQuery):
+    if not BotUtils.is_admin(call.from_user.id):
+        await call.answer("⛔ غير مسموح", show_alert=True)
+        return
+    page = int(call.data.split(":", 4)[4])
+    await _show_accounts2_list(call.message, page, search_query=None, use_edit=True)
+    await call.answer()
+
+
+@dp.callback_query(F.data == "admin:accounts2:search")
+async def admin_accounts2_search_prompt(call: types.CallbackQuery, state: FSMContext):
+    if not BotUtils.is_admin(call.from_user.id):
+        await call.answer("⛔ غير مسموح", show_alert=True)
+        return
+    await state.set_state(AdminState.accounts2_search)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ رجوع", callback_data="admin:accounts2")]])
+    await safe_edit_text(call.message, "أرسل جزءاً من اسم الحساب للبحث:", kb, markdown=False)
+    await call.answer()
+
+
+@dp.message(AdminState.accounts2_search)
+async def admin_accounts2_search(message: types.Message, state: FSMContext):
+    if not BotUtils.is_admin(message.from_user.id):
+        await message.answer("⛔ غير مسموح")
+        await state.clear()
+        return
+    query = (message.text or "").strip()
+    if not query:
+        await message.answer("❗ اكتب كلمة للبحث.")
+        return
+    _set_accounts2_search_query(query)
+    await state.clear()
+    await _show_accounts2_list(message, 0, search_query=query, use_edit=False)
+
+
+@dp.callback_query(F.data.startswith("admin:accounts2:search:page:"))
+async def admin_accounts2_search_page(call: types.CallbackQuery):
+    if not BotUtils.is_admin(call.from_user.id):
+        await call.answer("⛔ غير مسموح", show_alert=True)
+        return
+    query = _get_accounts2_search_query()
+    if not query:
+        kb = _build_accounts2_menu_kb()
+        await safe_edit_text(call.message, "❗ أعد البحث أولاً.", kb, markdown=False)
+        await call.answer()
+        return
+    page = int(call.data.split(":", 4)[4])
+    await _show_accounts2_list(call.message, page, search_query=query, use_edit=True)
+    await call.answer()
 
 
 # =========================

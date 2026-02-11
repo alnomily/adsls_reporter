@@ -2,6 +2,8 @@ import asyncio
 import json
 import logging
 import os
+import re
+from datetime import date, datetime
 from functools import partial
 from typing import Any, Callable, Dict, Optional
 
@@ -108,6 +110,16 @@ def _sync_users_exists(adsls: list):
     rows = fetch_all('SELECT adsl_number FROM users_accounts WHERE adsl_number = ANY(%s::text[])', [adsls])
     return DBResponse(data=rows)
 
+def _sync_users_exists_accounts2(adsls: list):
+    if not adsls:
+        return DBResponse(data=[])
+    try:
+        rows = fetch_all('SELECT adsl_number FROM users_accounts2 WHERE adsl_number = ANY(%s::text[])', [adsls])
+        return DBResponse(data=rows)
+    except psycopg2.errors.UndefinedTable:
+        logger.error("users_accounts2 table is missing. Create it before running range processing.")
+        raise RuntimeError("users_accounts2 table missing")
+
 def _unwrap_network_id(network_id: Any):
     """Ensure network_id is a primitive (int/str)."""
     try:
@@ -131,6 +143,44 @@ def _unwrap_network_id(network_id: Any):
     return network_id
 
 
+def _parse_expiry_date_value(value: Any) -> Optional[date]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+
+    s = str(value).strip()
+    if not s or s in {"-", "none", "null"}:
+        return None
+
+    for fmt in (
+        "%A %d/%m/%Y %I:%M %p",
+        "%a %d/%m/%Y %I:%M %p",
+        "%d/%m/%Y %I:%M %p",
+        "%d/%m/%Y %H:%M",
+        "%d/%m/%Y",
+        "%Y-%m-%d",
+    ):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except Exception:
+            pass
+
+    m = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", s)
+    if m:
+        try:
+            day = int(m.group(1))
+            month = int(m.group(2))
+            year = int(m.group(3))
+            return date(year, month, day)
+        except Exception:
+            return None
+
+    return None
+
+
 def _sync_insert_user_account(username: str, password: str, network_id: Any, adsl: Optional[str] = None):
     network_id = _unwrap_network_id(network_id)
     payload_username = str(username)
@@ -152,6 +202,109 @@ def _sync_insert_user_account(username: str, password: str, network_id: Any, ads
         if getattr(e, "pgcode", None) == "23505" or isinstance(getattr(e, "__cause__", None), pg_errors.UniqueViolation):
             return "DUPLICATE"
         raise
+
+def _sync_insert_user_account2(
+    username: str,
+    password: str,
+    network_id: Any,
+    adsl: Optional[str] = None,
+    account_data: Optional[Dict[str, Any]] = None,
+):
+    network_id = _unwrap_network_id(network_id)
+    payload_username = str(username)
+    payload_password = str(password)
+    payload_adsl = str(adsl) if adsl else None
+    account_data = account_data or {}
+
+    account_name = account_data.get("account_name")
+    plan = account_data.get("plan")
+    status = account_data.get("status")
+    expiry_date = _parse_expiry_date_value(account_data.get("expiry_date"))
+    balance_value = account_data.get("available_balance")
+
+    cols = ["username", "password", "network_id", "is_active"] + (["adsl_number"] if payload_adsl else [])
+    vals = [payload_username, payload_password, network_id, True] + ([payload_adsl] if payload_adsl else [])
+
+    if account_name:
+        cols.append("account_name")
+        vals.append(str(account_name))
+    if plan:
+        cols.append("plan")
+        vals.append(str(plan))
+    if status:
+        cols.append("status")
+        vals.append(str(status))
+    if expiry_date:
+        cols.append("expiry_date")
+        vals.append(expiry_date)
+    if balance_value is not None:
+        cols.append("balance_value")
+        vals.append(str(balance_value))
+    placeholders = ", ".join(["%s"] * len(vals))
+
+    try:
+        row = insert_returning_one(
+            f"INSERT INTO users_accounts2 ({', '.join(cols)}) VALUES ({placeholders}) RETURNING id",
+            vals,
+        )
+        return (row or {}).get("id")
+    except psycopg2.IntegrityError as e:
+        if getattr(e, "pgcode", None) == "23505" or isinstance(getattr(e, "__cause__", None), pg_errors.UniqueViolation):
+            return "DUPLICATE"
+        raise
+    except psycopg2.errors.UndefinedTable:
+        logger.error("users_accounts2 table is missing. Create it before inserting.")
+        raise RuntimeError("users_accounts2 table missing")
+
+
+def _sync_get_users_accounts2(limit: int = 20, offset: int = 0):
+    try:
+        rows = fetch_all(
+            """
+            SELECT id, username, account_name, adsl_number, plan, status, expiry_date, balance_value, network_id
+            FROM users_accounts2
+            ORDER BY created_at DESC
+            LIMIT %s OFFSET %s
+            """.strip(),
+            [limit, offset],
+        )
+        return DBResponse(data=rows)
+    except psycopg2.errors.UndefinedTable:
+        logger.error("users_accounts2 table is missing. Create it before listing.")
+        return DBResponse(data=[], count=0)
+
+
+def _sync_search_users_accounts2_by_account_name(query: str, limit: int = 20, offset: int = 0):
+    try:
+        rows = fetch_all(
+            """
+            SELECT id, username, account_name, adsl_number, plan, status, expiry_date, balance_value, network_id
+            FROM users_accounts2
+            WHERE account_name ILIKE %s
+            ORDER BY created_at DESC
+            LIMIT %s OFFSET %s
+            """.strip(),
+            [f"%{query}%", limit, offset],
+        )
+        return DBResponse(data=rows)
+    except psycopg2.errors.UndefinedTable:
+        logger.error("users_accounts2 table is missing. Create it before searching.")
+        return DBResponse(data=[], count=0)
+
+
+def _sync_count_users_accounts2_by_account_name(query: Optional[str] = None):
+    try:
+        if query:
+            count = fetch_value(
+                "SELECT COUNT(*) FROM users_accounts2 WHERE account_name ILIKE %s",
+                [f"%{query}%"],
+            )
+        else:
+            count = fetch_value("SELECT COUNT(*) FROM users_accounts2", [])
+        return DBResponse(data=[], count=int(count or 0))
+    except psycopg2.errors.UndefinedTable:
+        logger.error("users_accounts2 table is missing. Create it before counting.")
+        return DBResponse(data=[], count=0)
 
 def _sync_insert_users_accounts(usersnames: list, network_id: str, adsl: Optional[str] = None):
     if not usersnames:
@@ -980,6 +1133,18 @@ async def get_latest_account_data_db(user_id: str, retries: int = 4, initial_bac
     # After exhausting retries, re-raise the last exception so callers can handle it
     if last_exc:
         raise last_exc
+
+
+async def get_users_accounts2(limit: int = 20, offset: int = 0):
+    return await run_blocking(partial(_sync_get_users_accounts2, limit, offset))
+
+
+async def search_users_accounts2_by_account_name(query: str, limit: int = 20, offset: int = 0):
+    return await run_blocking(partial(_sync_search_users_accounts2_by_account_name, query, limit, offset))
+
+
+async def count_users_accounts2_by_account_name(query: Optional[str] = None):
+    return await run_blocking(partial(_sync_count_users_accounts2_by_account_name, query))
     return None
 
 
@@ -1054,6 +1219,9 @@ async def get_network_by_id(network_id: int):
 async def users_exists(adsls: list):
     return await run_blocking(partial(_sync_users_exists, adsls))
 
+async def users_exists_accounts2(adsls: list):
+    return await run_blocking(partial(_sync_users_exists_accounts2, adsls))
+
 async def change_chat_networks_times_to_send_reports(chat_network_id: int, times_to_send_reports: int):
     return await run_blocking(partial(_sync_change_chat_networks_times_to_send_reports, chat_network_id, times_to_send_reports))
 
@@ -1125,9 +1293,23 @@ def sync_insert_user_account(username: str, password: str, network_id: str, adsl
     """Synchronous helper for inserting a user account."""
     return _sync_insert_user_account(username, password, network_id, adsl)
 
+def sync_insert_user_account2(
+    username: str,
+    password: str,
+    network_id: str,
+    adsl: Optional[str] = None,
+    account_data: Optional[Dict[str, Any]] = None,
+):
+    """Synchronous helper for inserting a user account into users_accounts2."""
+    return _sync_insert_user_account2(username, password, network_id, adsl, account_data)
+
 def sync_users_exists(adsls: list):
     """Synchronous helper for checking if multiple users exist."""
     return _sync_users_exists(adsls)
+
+def sync_users_exists_accounts2(adsls: list):
+    """Synchronous helper for checking if multiple users exist in users_accounts2."""
+    return _sync_users_exists_accounts2(adsls)
 
 logger = logging.getLogger("YemenNetBot.utils_shared")
 SCRAPE_LOCK_TIMEOUT_SECONDS = int(os.getenv("SCRAPE_LOCK_TIMEOUT_SECONDS", "90"))
