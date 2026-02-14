@@ -1,0 +1,55 @@
+services:
+  yemen-net-bot:
+    build: .
+    volumes:
+      - ./fonts:/app/fonts:ro
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    env_file:
+      - .env
+    environment:
+      # Service DNS names only work inside the compose network
+      AI_MODEL_URL: http://ai-model:8000
+      LOCAL_PG_HOST: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ai-model:
+        condition: service_healthy
+    restart: unless-stopped
+
+  ai-model:
+    build:
+      context: .
+      dockerfile: ai_model/Dockerfile
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()\" "]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:18
+    ports:
+      # Map container 5432 to a different host port to avoid clashing with local Postgres.
+      - "${DOCKER_PG_PORT:-5433}:5432"
+    environment:
+      POSTGRES_DB: ${LOCAL_PG_DB:-yemen_net_postgres}
+      POSTGRES_USER: ${LOCAL_PG_USER:-postgres}
+      POSTGRES_PASSWORD: ${LOCAL_PG_PASSWORD:-alnomily_2024}
+    volumes:
+      # Postgres 18+ expects a single mount at /var/lib/postgresql
+      - pg_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${LOCAL_PG_USER:-postgres} -d ${LOCAL_PG_DB:-yemen_net_postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pg_data:

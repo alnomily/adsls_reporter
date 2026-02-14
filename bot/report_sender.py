@@ -7,7 +7,7 @@ from typing import List, Tuple, Dict, Any
 
 from aiogram import types
 import io
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 
 from bot.table_report import TableReportGenerator
 from bot.user_manager import UserManager
@@ -238,7 +238,10 @@ async def send_images(bot_instance,network:SelectedNetwork, telegram_id: str, im
                     pass
                 continue
 
-            file_obj = types.BufferedInputFile(data, filename=os.path.basename(img))
+            def _make_file_obj():
+                return types.BufferedInputFile(data, filename=os.path.basename(img))
+
+            file_obj = _make_file_obj()
 
             # send with retry for transient errors
             _reported_orphan_tokens = globals().setdefault("_reported_orphan_tokens", set())
@@ -255,21 +258,43 @@ async def send_images(bot_instance,network:SelectedNetwork, telegram_id: str, im
                     chat_network_id = p.get("id")
                     # Immediate (non-daily) sends have no partner schedule gating
                     logger.info("Sending report to partner %s for user %s network %s page %d", partner_token, network.user_name, network.network_name, page)
-                    try:
+
+                    @retry(
+                        reraise=True,
+                        stop=stop_after_attempt(3),
+                        wait=wait_exponential(multiplier=1.0, min=2, max=15),
+                        retry=retry_if_exception_type((TelegramNetworkError, asyncio.TimeoutError)),
+                    )
+                    async def _send_partner_with_retry():
+                        header = (
+                            "تقرير من السجل\n"
+                            if report_date
+                            else f"📊 {'تقرير يومي' if isDailyReport else 'تقرير فوري'} من شريك\n"
+                        )
+                        time_line = (
+                            f"🕒 تاريخ التقرير: {report_date}\n"
+                            if report_date
+                            else f"🕒 وقت التقرير: {datetime.now(tz).strftime('%Y-%m-%d %H:%M')}\n"
+                        )
+                        image_line = (
+                            f"– الصورة {page}/{imagesLength}\n" if imagesLength > 1 else ""
+                        )
                         await bot_instance.send_photo(
                             chat_id=int(partner_token),
-                            photo=file_obj,
-                            caption=(f"{f"📊 {'تقرير يومي' if isDailyReport else 'تقرير فوري'} من شريك\n" if not report_date else "تقرير من السجل\n"}"
-                                    f"🛜 الشبكة: {network.network_name}\n"
-                                    f"{(f'– الصورة {page}/{imagesLength}\n') if imagesLength > 1 else ''}"
-                                    f"👥 عدد الخطوط: {len(user_reports)}\n"
-                                    f"{f"🕒 وقت التقرير: {datetime.now(tz).strftime('%Y-%m-%d %H:%M')}\n" if not report_date else f"🕒 تاريخ التقرير: {report_date}\n"}"
-                                    f"〰️\n"
-
-                            )
-                            ,
-                            request_timeout=60
+                            photo=_make_file_obj(),
+                            caption=(
+                                f"{header}"
+                                f"🛜 الشبكة: {network.network_name}\n"
+                                f"{image_line}"
+                                f"👥 عدد الخطوط: {len(user_reports)}\n"
+                                f"{time_line}"
+                                "〰️\n"
+                            ),
+                            request_timeout=120
                         )
+
+                    try:
+                        await _send_partner_with_retry()
                     except TelegramBadRequest as tbe:
                         msg = str(tbe).lower()
                         if 'chat not found' in msg:
@@ -282,6 +307,7 @@ async def send_images(bot_instance,network:SelectedNetwork, telegram_id: str, im
                             logger.exception("TelegramBadRequest sending to partner %s for user %s network %s page %d: %s", partner_token, network.user_name, network.network_name, page, tbe)
                     except Exception as e:
                         logger.exception("Failed to send report to partner %s for user %s network %s page %d: %s", partner_token, network.user_name, network.network_name, page, e)
+                    await asyncio.sleep(0.2)
 
             @retry(reraise=True, stop=stop_after_attempt(5),
                    wait=wait_exponential(multiplier=1.0, min=2, max=20),
@@ -289,19 +315,31 @@ async def send_images(bot_instance,network:SelectedNetwork, telegram_id: str, im
             async def _send_with_retry():
                 imagesLength = len(images)
                 try:
+                    header = (
+                        "تقرير من السجل\n"
+                        if report_date
+                        else f"📊 {'تقرير يومي' if isDailyReport else 'تقرير فوري'}\n"
+                    )
+                    time_line = (
+                        f"🕒 تاريخ التقرير: {report_date}\n"
+                        if report_date
+                        else f"🕒 وقت التقرير: {datetime.now(tz).strftime('%Y-%m-%d %H:%M')}\n"
+                    )
+                    image_line = (
+                        f"– الصورة {page}/{imagesLength}\n" if imagesLength > 1 else ""
+                    )
                     await bot_instance.send_photo(
                         chat_id=chat_id_to_use,
                         photo=file_obj,
-                        caption=(f"{f"📊 {'تقرير يومي' if isDailyReport else 'تقرير فوري'}\n" if not report_date else "تقرير من السجل\n"}"
-                                f"🛜 الشبكة: {network.network_name}\n"
-                                f"{(f'– الصورة {page}/{imagesLength}\n') if imagesLength > 1 else ''}"
-                                f"👥 عدد الخطوط: {len(user_reports)}\n"
-                                f"{f"🕒 وقت التقرير: {datetime.now(tz).strftime('%Y-%m-%d %H:%M')}\n" if not report_date else f"🕒 تاريخ التقرير: {report_date}\n"}"
-                                f"〰️\n"
-
-                        )
-                        ,
-                        request_timeout=60
+                        caption=(
+                            f"{header}"
+                            f"🛜 الشبكة: {network.network_name}\n"
+                            f"{image_line}"
+                            f"👥 عدد الخطوط: {len(user_reports)}\n"
+                            f"{time_line}"
+                            "〰️\n"
+                        ),
+                        request_timeout=120
                     )
                     # Send to partners only for non-daily reports
                     if not isDailyReport:

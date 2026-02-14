@@ -58,14 +58,22 @@ class TableReportGenerator:
 
     def _load_fonts(self):
         self.fonts = {
-            'title': font_manager.get_font('arabic_bold', 40),
-            'table_header': font_manager.get_font('arabic_bold', 32),  # Increased from 24
-            'header': font_manager.get_font('arabic_bold', 36),  # Increased from 24
-            'bold': font_manager.get_font('arabic_bold', 30),    # Increased from 20
-            'regular': font_manager.get_font('arabic', 18),
-            'small': font_manager.get_font('arabic', 14),
-            'medium': font_manager.get_font('arabic', 16),
+            'title': font_manager.get_font('arabic_bold', 44),
+            'table_header': font_manager.get_font('arabic_bold', 34),
+            'header': font_manager.get_font('arabic_bold', 34),
+            'bold': font_manager.get_font('arabic_bold', 30),
+            'regular': font_manager.get_font('arabic', 20),
+            'small': font_manager.get_font('arabic', 15),
+            'medium': font_manager.get_font('arabic', 18),
         }
+
+    def _get_text_bbox_draw(self, draw: ImageDraw.Draw, text: str, font: ImageFont.ImageFont):
+        try:
+            if hasattr(draw, 'textbbox'):
+                return draw.textbbox((0, 0), text, font=font)
+        except Exception:
+            pass
+        return self._get_text_bbox(text, font)
 
     def _process_arabic_text(self, text: str) -> str:
         if text is None:
@@ -178,18 +186,12 @@ class TableReportGenerator:
             col_width = col["width"]
             col_left = current_x - col_width
             ar_text = self._process_arabic_text(col["name"])
-            ar_bbox = self._get_text_bbox(ar_text, self.fonts['table_header'])  # Use bigger header font
-            if ar_bbox:
-                tb_x0, tb_y0, tb_x1, tb_y1 = ar_bbox
-                ar_width = tb_x1 - tb_x0
-                ar_height = tb_y1 - tb_y0
-                ar_x = col_left + (col_width - ar_width) // 2
-                # center vertically and compensate for bbox top (tb_y0 may be negative)
-                ar_y = y_pos + max(0, (header_height - ar_height) // 2) - tb_y0
-            else:
-                ar_width = 0
-                ar_x = col_left + (col_width // 2)
-                ar_y = y_pos + (header_height // 2) - 8
+            ar_bbox = self._get_text_bbox_draw(draw, ar_text, self.fonts['table_header'])
+            tb_x0, tb_y0, tb_x1, tb_y1 = ar_bbox
+            ar_width = tb_x1 - tb_x0
+            ar_height = tb_y1 - tb_y0
+            ar_x = col_left + (col_width - ar_width) // 2 - tb_x0
+            ar_y = y_pos + max(0, (header_height - ar_height) // 2) - tb_y0
             draw.text((ar_x, ar_y), ar_text, fill=self.colors['header_text'], font=self.fonts['table_header'])
             current_x = col_left
         draw.line([(self.left_margin, y_pos), (self.left_margin, y_pos + header_height)],
@@ -220,16 +222,12 @@ class TableReportGenerator:
             col_width = col["width"]
             col_left = current_x - col_width
             ar_text = self._process_arabic_text(col["name"])
-            ar_bbox = self._get_text_bbox(ar_text, self.fonts['table_header'])
-            if ar_bbox:
-                tb_x0, tb_y0, tb_x1, tb_y1 = ar_bbox
-                ar_width = tb_x1 - tb_x0
-                ar_height = tb_y1 - tb_y0
-                ar_x = col_left + (col_width - ar_width) // 2
-                ar_y = y_pos + max(0, (header_height - ar_height) // 2) - tb_y0
-            else:
-                ar_x = col_left + (col_width // 2)
-                ar_y = y_pos + (header_height // 2) - 8
+            ar_bbox = self._get_text_bbox_draw(draw, ar_text, self.fonts['table_header'])
+            tb_x0, tb_y0, tb_x1, tb_y1 = ar_bbox
+            ar_width = tb_x1 - tb_x0
+            ar_height = tb_y1 - tb_y0
+            ar_x = col_left + (col_width - ar_width) // 2 - tb_x0
+            ar_y = y_pos + max(0, (header_height - ar_height) // 2) - tb_y0
             draw.text((ar_x, ar_y), ar_text, fill=self.colors['header_text'], font=self.fonts['table_header'])
             current_x = col_left
 
@@ -252,18 +250,12 @@ class TableReportGenerator:
                     key, is_currency = col_totals_map[i]
                     val = totals.get(key, 0.0)
                     text = self._clean_numeric(str(val), is_currency=is_currency)
-                    text_bbox = self._get_text_bbox(text, self.fonts['bold'])
-                    if text_bbox:
-                        tb_x0, tb_y0, tb_x1, tb_y1 = text_bbox
-                        text_w = tb_x1 - tb_x0
-                        text_h = tb_y1 - tb_y0
-                        tx = col_left + max(2, (col_width - text_w) // 2)
-                        # center within the footer rectangle (top = y_pos)
-                        ty = y_pos + max(0, (header_height - text_h) // 2) - tb_y0
-                    else:
-                        text_w = len(text) * 8
-                        tx = col_left + max(2, (col_width - text_w) // 2)
-                        ty = y_pos + max(2, (header_height - 18) // 2)
+                    text_bbox = self._get_text_bbox_draw(draw, text, self.fonts['bold'])
+                    tb_x0, tb_y0, tb_x1, tb_y1 = text_bbox
+                    text_w = tb_x1 - tb_x0
+                    text_h = tb_y1 - tb_y0
+                    tx = col_left + max(2, (col_width - text_w) // 2) - tb_x0
+                    ty = y_pos + max(0, (header_height - text_h) // 2) - tb_y0
                     draw.text((tx, ty), text, fill=self.colors['header_text'], font=self.fonts['bold'])
                 current_x = col_left
 
@@ -484,19 +476,20 @@ class TableReportGenerator:
             max_text_w = max(10, col_width - padding * 2)
 
             safe_text = self._truncate_to_width(text, font, max_text_w)
-            text_bbox = self._get_text_bbox(safe_text, font)
+            text_bbox = self._get_text_bbox_draw(draw, safe_text, font)
             # bbox may be (x0, y0, x1, y1) where y0 can be negative for some scripts/fonts
             if text_bbox:
                 tb_x0, tb_y0, tb_x1, tb_y1 = text_bbox
                 text_width = tb_x1 - tb_x0
                 text_height = tb_y1 - tb_y0
-                # center vertically within the row, compensating for bbox top
-                text_x = col_left + max(2, (col_width - text_width) // 2)
+                # Center within padded area, compensating for bbox bearings (x0/y0)
+                avail_w = max_text_w
+                text_x = col_left + padding + max(0, (avail_w - text_width) // 2) - tb_x0
                 text_y = y_pos + max(0, (row_height - text_height) // 2) - tb_y0
             else:
                 text_width = len(safe_text) * 8
                 text_height = 18
-                text_x = col_left + max(2, (col_width - text_width) // 2)
+                text_x = col_left + padding + max(0, (max_text_w - text_width) // 2)
                 text_y = y_pos + max(2, (row_height - text_height) // 2)
 
             draw.text((text_x, text_y), safe_text, fill=color, font=font)
@@ -548,9 +541,10 @@ class TableReportGenerator:
                        fill=self.colors['accent'], outline=self.colors['border'], width=2)
 
         # Prepare texts and fonts
-        summary_text = self._process_arabic_text(
-            f"إجمالي الخطوط: {total_lines} {f"| الصفحة: {current_page} من {total_pages}" if total_pages > 1 else ''}"
+        page_suffix = (
+            f" | الصفحة: {current_page} من {total_pages}" if total_pages > 1 else ""
         )
+        summary_text = self._process_arabic_text(f"إجمالي الخطوط: {total_lines}{page_suffix}")
         summary_font = self.fonts.get('header', self.fonts.get('header'))
 
         sales_text = None
@@ -561,7 +555,7 @@ class TableReportGenerator:
             )
 
         # Measure bboxes using the chosen fonts
-        sb_bbox = self._get_text_bbox(summary_text, summary_font)
+        sb_bbox = self._get_text_bbox_draw(draw, summary_text, summary_font)
         if sb_bbox:
             sb_x0, sb_y0, sb_x1, sb_y1 = sb_bbox
             sb_w = sb_x1 - sb_x0
@@ -573,7 +567,7 @@ class TableReportGenerator:
 
         sales_w = sales_h = sales_x0 = sales_y0 = 0
         if sales_text:
-            s_bbox = self._get_text_bbox(sales_text, sales_font)
+            s_bbox = self._get_text_bbox_draw(draw, sales_text, sales_font)
             if s_bbox:
                 sales_x0, sales_y0, sx1, sy1 = s_bbox
                 sales_w = sx1 - sales_x0
@@ -591,105 +585,94 @@ class TableReportGenerator:
         block_top = y_pos + max(0, (footer_height - block_h) // 2)
 
         # Draw summary centered
-        sx = (self.image_width - sb_w) // 2
+        sx = (self.image_width - sb_w) // 2 - sb_x0
         sy = block_top - sb_y0
         draw.text((sx, sy), summary_text, fill=self.colors['header_text'], font=summary_font)
 
         # Draw sales text (if any) below the summary, centered
         if sales_text:
-            sales_x = (self.image_width - sales_w) // 2
+            sales_x = (self.image_width - sales_w) // 2 - sales_x0
             sales_y = block_top + sb_h + spacing - sales_y0
             draw.text((sales_x, sales_y), sales_text, fill=self.colors['black'], font=sales_font)
 
         return footer_height
 
-    def _draw_report_header(self, draw: ImageDraw.Draw, network: SelectedNetwork, chat_user: ChatUser, current_page: int, total_pages: int, report_date: str = ""):
-        title_ar = self._process_arabic_text("تقرير خطوط النت لشبكة {}".format(network.network_name))
-        title_ar_bbox = self._get_text_bbox(title_ar, self.fonts['title'])
-        title_ar_width = title_ar_bbox[2] - title_ar_bbox[0]
-        draw.text(((self.image_width - title_ar_width) // 2, 20), title_ar,
-                  fill=self.colors['text_primary'], font=self.fonts['title'])
-        subtitle_ar = self._process_arabic_text("تفاصيل الرصيد والاستهلاك")
-        subtitle_ar_bbox = self._get_text_bbox(subtitle_ar, self.fonts['header'])
-        subtitle_ar_width = subtitle_ar_bbox[2] - subtitle_ar_bbox[0]
-        draw.text(((self.image_width - subtitle_ar_width) // 2, 60), subtitle_ar,
-                  fill=self.colors['text_secondary'], font=self.fonts['header'])
-        # Timestamp
-        timestamp = datetime.now().strftime("%Y/%m/%d   الساعة : %H:%M:%S") if not report_date else report_date
-        timestamp_ar = self._process_arabic_text(f"تاريخ التقرير: {timestamp}")
-        timestamp_bbox = self._get_text_bbox(timestamp_ar, self.fonts['header'])
-        timestamp_width = timestamp_bbox[2] - timestamp_bbox[0]
-        # Place timestamp under the subtitle (with a small gap)
-        gap_under_subtitle = 25
-        subtitle_bottom = 60 + (subtitle_ar_bbox[3] - subtitle_ar_bbox[1])
-        timestamp_x = (self.image_width - timestamp_width) - self.right_margin - 20
-        timestamp_y = subtitle_bottom + gap_under_subtitle
-        draw.text((timestamp_x, timestamp_y), timestamp_ar,
-              fill=self.colors['text_secondary'], font=self.fonts['header'])
-        # Day count: center under the subtitle/title block
-        # day_num = self.day_num or "28"
-        
+    def _draw_report_header(self, draw: ImageDraw.Draw, network: SelectedNetwork, chat_user: ChatUser, current_page: int, total_pages: int, report_date: str = "") -> int:
+        top_y = 12
+        padding_x = 20
+        left_x = self.left_margin + padding_x
+        right_x = self.image_width - self.right_margin - padding_x
+
+        # Left: remaining days
         logger.info("Expiry value for network %s: %s", network.network_name, network.expiration_date)
         left_days = self._calculate_remaining_days(network.expiration_date) if network.expiration_date else "-"
         day_count = f"الأيام المتبقية لانتهاء الاشتراك: {left_days}" if left_days not in ("-", "", None) else ""
         day_count_ar = self._process_arabic_text(day_count)
-        day_count_bbox = self._get_text_bbox(day_count_ar, self.fonts['header'])
-        if day_count_bbox:
-            dc_x0, dc_y0, dc_x1, dc_y1 = day_count_bbox
-            day_count_w = dc_x1 - dc_x0
-            day_count_h = dc_y1 - dc_y0
-        else:
-            day_count_w = len(day_count_ar) * 8
-            day_count_h = 18
-            dc_x0 = dc_y0 = 0
+        dc_bbox = self._get_text_bbox_draw(draw, day_count_ar, self.fonts['header'])
+        dc_x0, dc_y0, dc_x1, dc_y1 = dc_bbox
+        dc_h = dc_y1 - dc_y0
+        draw.text((left_x - dc_x0, top_y - dc_y0), day_count_ar, fill=self.colors['text_secondary'], font=self.fonts['header'])
 
-        # Place the day count centered horizontally below the subtitle (with a small gap)
-        gap_under_subtitle = 10
-        subtitle_bottom = 60 + (subtitle_ar_bbox[3] - subtitle_ar_bbox[1])
-        day_count_x = self.left_margin + 20
-        day_count_y = 40
-        draw.text((day_count_x, day_count_y), day_count_ar,
-                  fill=self.colors['text_secondary'], font=self.fonts['header'])
-        # Client name (right-aligned)
+        # Right: client info
         clints = self.client_name or network.user_name
-        clint_name = f"اسم المشترك : {clints}"
-        clint_name_ar = self._process_arabic_text(clint_name)
-        clint_name_bbox = self._get_text_bbox(clint_name_ar, self.fonts['header'])
-        base_x_right = self.image_width - self.right_margin - 20
-        base_y = 40
-        if clint_name_bbox:
-            cn_x0, cn_y0, cn_x1, cn_y1 = clint_name_bbox
-            clint_name_w = cn_x1 - cn_x0
-            clint_name_h = cn_y1 - cn_y0
-            clint_name_x = base_x_right - clint_name_w
-            clint_name_y = base_y - cn_y0
-        else:
-            clint_name_w = 0
-            clint_name_h = 18
-            clint_name_x = base_x_right
-            clint_name_y = base_y
-        draw.text((clint_name_x, clint_name_y), clint_name_ar,
-                  fill=self.colors['text_secondary'], font=self.fonts['header'])
+        clint_name_ar = self._process_arabic_text(f"اسم المشترك : {clints}")
+        cn_bbox = self._get_text_bbox_draw(draw, clint_name_ar, self.fonts['header'])
+        cn_x0, cn_y0, cn_x1, cn_y1 = cn_bbox
+        cn_w = cn_x1 - cn_x0
+        cn_h = cn_y1 - cn_y0
+        clint_name_x = right_x - cn_w - cn_x0
+        clint_name_y = top_y - cn_y0
+        draw.text((clint_name_x, clint_name_y), clint_name_ar, fill=self.colors['text_secondary'], font=self.fonts['header'])
 
-        # Client chat id: place under client name (same right alignment)
         clints_chat = chat_user.chat_user_id or self.client_chat_id or "----"
-        clint_chat_id = f"معرف المشترك : {clints_chat}"
-        clint_chat_id_ar = self._process_arabic_text(clint_chat_id)
-        clint_chat_id_bbox = self._get_text_bbox(clint_chat_id_ar, self.fonts['header'])
+        clint_chat_id_ar = self._process_arabic_text(f"معرف المشترك : {clints_chat}")
+        cc_bbox = self._get_text_bbox_draw(draw, clint_chat_id_ar, self.fonts['header'])
+        cc_x0, cc_y0, cc_x1, cc_y1 = cc_bbox
+        cc_w = cc_x1 - cc_x0
+        cc_h = cc_y1 - cc_y0
         spacing = 6
-        if clint_chat_id_bbox:
-            cc_x0, cc_y0, cc_x1, cc_y1 = clint_chat_id_bbox
-            chat_w = cc_x1 - cc_x0
-            chat_h = cc_y1 - cc_y0
-            chat_x = base_x_right - chat_w
-            chat_y = clint_name_y + clint_name_h + spacing - cc_y0
-        else:
-            chat_w = 0
-            chat_h = 18
-            chat_x = base_x_right
-            chat_y = clint_name_y + clint_name_h + spacing
-        draw.text((chat_x, chat_y), clint_chat_id_ar,
-                  fill=self.colors['text_secondary'], font=self.fonts['header'])
+        chat_x = right_x - cc_w - cc_x0
+        chat_y = (clint_name_y + cn_h + spacing) - cc_y0
+        draw.text((chat_x, chat_y), clint_chat_id_ar, fill=self.colors['text_secondary'], font=self.fonts['header'])
+
+        # Center: title + subtitle
+        title_ar = self._process_arabic_text("تقرير خطوط النت لشبكة {}".format(network.network_name))
+        title_bbox = self._get_text_bbox_draw(draw, title_ar, self.fonts['title'])
+        t_x0, t_y0, t_x1, t_y1 = title_bbox
+        t_w = t_x1 - t_x0
+        t_h = t_y1 - t_y0
+        title_y = top_y
+        title_x = (self.image_width - t_w) // 2 - t_x0
+        draw.text((title_x, title_y - t_y0), title_ar, fill=self.colors['text_primary'], font=self.fonts['title'])
+
+        subtitle_ar = self._process_arabic_text("تفاصيل الرصيد والاستهلاك")
+        subtitle_bbox = self._get_text_bbox_draw(draw, subtitle_ar, self.fonts['header'])
+        s_x0, s_y0, s_x1, s_y1 = subtitle_bbox
+        s_w = s_x1 - s_x0
+        s_h = s_y1 - s_y0
+        subtitle_y = title_y + t_h + 6
+        subtitle_x = (self.image_width - s_w) // 2 - s_x0
+        draw.text((subtitle_x, subtitle_y - s_y0), subtitle_ar, fill=self.colors['text_secondary'], font=self.fonts['header'])
+
+        # Timestamp (right aligned, under subtitle)
+        timestamp = datetime.now().strftime("%Y/%m/%d   الساعة : %H:%M:%S") if not report_date else report_date
+        timestamp_ar = self._process_arabic_text(f"تاريخ التقرير: {timestamp}")
+        ts_bbox = self._get_text_bbox_draw(draw, timestamp_ar, self.fonts['header'])
+        ts_x0, ts_y0, ts_x1, ts_y1 = ts_bbox
+        ts_w = ts_x1 - ts_x0
+        ts_h = ts_y1 - ts_y0
+        timestamp_x = right_x - ts_w - ts_x0
+        timestamp_y = subtitle_y + s_h + 10
+        draw.text((timestamp_x, timestamp_y - ts_y0), timestamp_ar, fill=self.colors['text_secondary'], font=self.fonts['header'])
+
+        bottom = max(
+            timestamp_y + ts_h,
+            chat_y + cc_h,
+            top_y + dc_h,
+            subtitle_y + s_h,
+            title_y + t_h,
+        )
+        return int(bottom + 12)
 
     def _enhance_image_quality(self, image: Image.Image) -> Image.Image:
         enhancer = ImageEnhance.Sharpness(image)
@@ -746,8 +729,8 @@ class TableReportGenerator:
         height = self.image_height
         image = Image.new("RGB", (width, height), self.colors['bg_primary'])
         draw = ImageDraw.Draw(image)
-        self._draw_report_header(draw,network, chat_user, current_page, total_pages, report_date)
-        table_start_y = 175
+        header_bottom = self._draw_report_header(draw,network, chat_user, current_page, total_pages, report_date)
+        table_start_y = max(175, header_bottom + 20)
         header_h, columns = self._draw_rtl_table_header(draw, table_start_y)
         current_y = table_start_y + header_h
         max_table_height = height - 200

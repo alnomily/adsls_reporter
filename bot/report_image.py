@@ -5,6 +5,7 @@ from bot.user_report import AccountData, UserReport
 from typing import Optional
 import arabic_reshaper
 from bidi.algorithm import get_display
+from bot.font_manager import font_manager
 
 # pip install arabic-reshaper python-bidi
 
@@ -30,43 +31,16 @@ class ReportImageGenerator:
     
     def _load_fonts(self):
         """Load fonts with Arabic support"""
-        font_paths = [
-            # Arabic supporting fonts (Windows)
-            "C:/Windows/Fonts/tahoma.ttf",
-            "C:/Windows/Fonts/arial.ttf",
-            # Linux
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            # macOS
-            "/Library/Fonts/Arial.ttf",
-            "/System/Library/Fonts/Supplemental/Arial.ttf",
-            # Fallback
-            None
-        ]
-        
-        for font_path in font_paths:
-            try:
-                self.fonts = {
-                    'title_bold': ImageFont.truetype(font_path, 28) if font_path else ImageFont.load_default(),
-                    'header': ImageFont.truetype(font_path, 22) if font_path else ImageFont.load_default(),
-                    'bold': ImageFont.truetype(font_path, 18) if font_path else ImageFont.load_default(),
-                    'regular': ImageFont.truetype(font_path, 16) if font_path else ImageFont.load_default(),
-                    'small': ImageFont.truetype(font_path, 14) if font_path else ImageFont.load_default(),
-                    'large': ImageFont.truetype(font_path, 32) if font_path else ImageFont.load_default(),
-                }
-                break
-            except Exception:
-                continue
-        
-        if not self.fonts:
-            self.fonts = {
-                'title_bold': ImageFont.load_default(),
-                'header': ImageFont.load_default(),
-                'bold': ImageFont.load_default(),
-                'regular': ImageFont.load_default(),
-                'small': ImageFont.load_default(),
-                'large': ImageFont.load_default(),
-            }
+        # Use the shared FontManager so Docker gets the best available offline Arabic font
+        # (e.g., Amiri if installed) and local mounted fonts take precedence.
+        self.fonts = {
+            'title_bold': font_manager.get_font('arabic_bold', 28),
+            'header': font_manager.get_font('arabic_bold', 22),
+            'bold': font_manager.get_font('arabic_bold', 18),
+            'regular': font_manager.get_font('arabic', 16),
+            'small': font_manager.get_font('arabic', 14),
+            'large': font_manager.get_font('arabic_bold', 32),
+        }
     
     def _process_arabic_text(self, text: str) -> str:
         """Process Arabic text for proper rendering"""

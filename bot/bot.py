@@ -14,6 +14,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from zoneinfo import ZoneInfo
 
+import psycopg2
+
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandObject
 from aiogram.types import (
@@ -123,6 +125,8 @@ async def main() -> None:
         # quick connectivity check via count_table
         await count_table("users_accounts")
         logger.info("PostgreSQL connected ✅")
+    except psycopg2.errors.UndefinedTable:
+        logger.warning("PostgreSQL connected ✅ (schema not initialized yet: users_accounts missing)")
     except Exception as e:
         logger.exception("PostgreSQL connection failed ❌: %s", e)
         return

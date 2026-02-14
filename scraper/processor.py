@@ -29,6 +29,7 @@ logger = logging.getLogger("yemen_scraper.processor")
 REQUEST_DELAY = 1.0
 CAPTCHA_TIMEOUT = 25
 MAX_ATTEMPTS = 3
+MAX_BACKOFF_SECONDS = float(os.getenv("MAX_BACKOFF_SECONDS", "20"))
 THREADS = max(2, min(64, (os.cpu_count() or 4) * 2))
 HTTP_POOL_SIZE = 20
 SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", "86400")) 
@@ -49,9 +50,13 @@ def _create_user_session(pool_size: int = HTTP_POOL_SIZE, retries: int = 2, back
     session.trust_env = False
     retry = Retry(
         total=retries,
+        connect=retries,
+        read=retries,
+        status=retries,
         backoff_factor=backoff,
         status_forcelist=(429, 500, 502, 503, 504),
         allowed_methods=frozenset(["GET", "POST"]),
+        respect_retry_after_header=True,
     )
     adapter = HTTPAdapter(pool_connections=pool_size, pool_maxsize=pool_size, max_retries=retry)
     session.mount("http://", adapter)
@@ -113,13 +118,12 @@ def get_predictor(model_path: str) -> PredictImageAPI:
     if _global_predictor is None:
         with _predictor_init_lock:
             if _global_predictor is None:
-                logger.info("Loading OCR model...")
+                logger.info("Initializing OCR client...")
                 _global_predictor = PredictImageAPI(model_path)
                 try:
-                    if hasattr(_global_predictor, "warmup"):
-                        _global_predictor.warmup()
+                    _global_predictor.warmup()
                 except Exception:
-                    logger.debug("Predictor warmup failed", exc_info=True)
+                    logger.debug("OCR client warmup failed", exc_info=True)
     return _global_predictor
 
 
@@ -194,9 +198,13 @@ def process_user(user_data: Dict[str, Any], model_path: str) -> bool:
                 with _predict_lock:
                     try:
                         captcha_value = predictor.predict_image(image_path=cap_path)
+                    except requests.exceptions.RequestException as e:
+                        # Usually means the ai-model service isn't reachable.
+                        # Keep the logs clean; the outer retry/backoff will handle it.
+                        logger.warning("Predictor connection error for %s: %s", username, e)
+                        captcha_value = None
                     except Exception as e:
-                        # Predictor failed (KeyError or decoding issues). Treat as empty
-                        # so the outer retry/backoff logic handles it.
+                        # Unexpected predictor failure (decoding/model/etc).
                         logger.warning("Predictor error for %s: %s", username, e, exc_info=True)
                         captcha_value = None
             finally:
@@ -232,10 +240,15 @@ def process_user(user_data: Dict[str, Any], model_path: str) -> bool:
             time.sleep(backoff)
             backoff *= 1.5
 
+        except requests.exceptions.RequestException as exc:
+            logger.warning("Network error for %s (attempt %s): %s", username, attempt, exc)
+            logger.debug("Network error details", exc_info=True)
+            time.sleep(backoff)
+            backoff = min(backoff * 1.5, MAX_BACKOFF_SECONDS)
         except Exception:
             logger.exception("Error processing user %s (attempt %s)", username, attempt)
             time.sleep(backoff)
-            backoff *= 1.5
+            backoff = min(backoff * 1.5, MAX_BACKOFF_SECONDS)
 
     insert_log(user_id, "fail", "max attempts reached")
     add_log(f"[FAIL] {username}")

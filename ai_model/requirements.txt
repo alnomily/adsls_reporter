@@ -1,0 +1,7 @@
+fastapi==0.115.8
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+requests==2.31.0
+# TF 2.16 ships with Keras 3, which matches the serialization format of
+# the provided `ocr_crnn_model.keras` (e.g. `keras.src.models.functional`).
+tensorflow==2.16.1

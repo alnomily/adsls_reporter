@@ -91,6 +91,24 @@ async def _block_if_active_flow(target: types.Message | types.CallbackQuery, sta
         await target.answer(message)
     return True
 
+
+async def _block_if_pending_request(
+    target: types.Message | types.CallbackQuery,
+    telegram_id: str,
+) -> bool:
+    try:
+        pending = await has_pending_request(telegram_id, PENDING_REQUEST_TYPES_BLOCKING)
+    except Exception:
+        pending = False
+    if not pending:
+        return False
+    message = "⚠️ لديك طلب قيد المراجعة حالياً. انتظر قرار الإدارة قبل إرسال طلب جديد."
+    if isinstance(target, types.CallbackQuery):
+        await target.answer(message, show_alert=True)
+    else:
+        await target.answer(message)
+    return True
+
 @dp.message(Command("start"))
 async def start_handler(message: types.Message, state: FSMContext):
     if await _block_if_active_flow(message, state):
@@ -113,17 +131,22 @@ async def start_handler(message: types.Message, state: FSMContext):
 
     await state.set_state(RegisterState.name)
     await state.update_data(registration_mode=True)
-    await message.answer("📝 أدخل اسمك:")
+    prompt = await message.answer("📝 أدخل اسمك:")
+    await _store_prompt_message_id(state, "name_prompt_message_id", prompt)
 
 @dp.message(RegisterState.name)
 async def register_name(message: types.Message, state: FSMContext):
+    await _clear_prompt_message(state, message.chat.id, "name_prompt_message_id")
     # Mark that we are in the new-network registration flow so the next handler accepts the network name
     await state.update_data(user_name=message.text, expecting_new_network=True)
     await state.set_state(RegisterState.network)
-    await message.answer("🌐 أدخل اسم الشبكة:")
+    prompt = await message.answer("🌐 أدخل اسم الشبكة:")
+    await _store_prompt_message_id(state, "network_prompt_message_id", prompt)
 
 @dp.message(RegisterState.network)
 async def register_network_add(message: types.Message, state: FSMContext):
+    await _clear_prompt_message(state, message.chat.id, "network_prompt_message_id")
+    await _clear_prompt_message(state, message.chat.id, "network_add_prompt_message_id")
     data = await state.get_data()
     # Only handle if we are in the "network_add" flow; otherwise let the original handler run
     if not data.get("expecting_new_network"):
@@ -150,6 +173,8 @@ async def register_network_add(message: types.Message, state: FSMContext):
 
 @dp.message(RegisterState.network)
 async def register_network(message: types.Message, state: FSMContext):
+    await _clear_prompt_message(state, message.chat.id, "network_prompt_message_id")
+    await _clear_prompt_message(state, message.chat.id, "network_add_prompt_message_id")
     data = await state.get_data()
     # Only handle if we are in the "network_add" flow; otherwise let the original handler run
     if data.get("expecting_new_network"):
@@ -324,11 +349,17 @@ async def adsl_manual(call: types.CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="❌ إغلاق", callback_data="close_settings")]
         ])
     try:
-        await call.message.edit_text("📡كتب أرقام ADSL (كل رقم في سطر):\nمثال:\n01087890\n01098099\n01836382", reply_markup=kb)
-        await state.update_data(adsl_prompt_message_id=call.message.message_id)
+        await call.message.edit_text(
+            "📡كتب أرقام ADSL (كل رقم في سطر):\nمثال:\n01087890\n01098099\n01836382",
+            reply_markup=kb,
+        )
+        await _store_prompt_message_id(state, "adsl_prompt_message_id", call.message)
     except Exception:
-        sent = await call.message.answer("📡 كتب أرقام ADSL (كل رقم في سطر):\nمثال:\n01087890\n01098099\n01836382", reply_markup=kb)
-        await state.update_data(adsl_prompt_message_id=getattr(sent, "message_id", None))
+        sent = await call.message.answer(
+            "📡 كتب أرقام ADSL (كل رقم في سطر):\nمثال:\n01087890\n01098099\n01836382",
+            reply_markup=kb,
+        )
+        await _store_prompt_message_id(state, "adsl_prompt_message_id", sent)
     await call.answer()
 
 @dp.callback_query(F.data == "adsl_manual_with_names")
@@ -347,11 +378,17 @@ async def adsl_manual_with_names(call: types.CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="❌ إغلاق", callback_data="close_settings")]
         ])
     try:
-        await call.message.edit_text("📡 اكتب أرقام ADSL مع أسماء المستخدمين (كل زوج في سطر، مفصول بمسافة أو فاصلة) الخانة الأولى هي رقم ADSL واسم المستخدم بعدها:\nمثال:\n01087890 087890\n01098099,11098099\n01836382 1836382", reply_markup=kb)
-        await state.update_data(adsl_prompt_message_id=call.message.message_id)
+        await call.message.edit_text(
+            "📡 اكتب أرقام ADSL مع أسماء المستخدمين (كل زوج في سطر، مفصول بمسافة أو فاصلة) الخانة الأولى هي رقم ADSL واسم المستخدم بعدها:\nمثال:\n01087890 087890\n01098099,11098099\n01836382 1836382",
+            reply_markup=kb,
+        )
+        await _store_prompt_message_id(state, "adsl_prompt_message_id", call.message)
     except Exception:
-        sent = await call.message.answer("📡 اكتب أرقام ADSL مع أسماء المستخدمين (كل زوج في سطر، مفصول بمسافة أو فاصلة) الخانة الأولى هي رقم ADSL واسم المستخدم بعدها:\nمثال:\n01087890 087890\n01098099,11098099\n01836382 1836382", reply_markup=kb)
-        await state.update_data(adsl_prompt_message_id=getattr(sent, "message_id", None))
+        sent = await call.message.answer(
+            "📡 اكتب أرقام ADSL مع أسماء المستخدمين (كل زوج في سطر، مفصول بمسافة أو فاصلة) الخانة الأولى هي رقم ADSL واسم المستخدم بعدها:\nمثال:\n01087890 087890\n01098099,11098099\n01836382 1836382",
+            reply_markup=kb,
+        )
+        await _store_prompt_message_id(state, "adsl_prompt_message_id", sent)
     await call.answer()
 
 @dp.callback_query(F.data == "adsl_move")
@@ -396,13 +433,20 @@ async def adsl_move(call: types.CallbackQuery, state: FSMContext):
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
-            text=f"{"🌟" if _is_owner_perm(n) else "🤝"} 🌐 {escape_markdown(n['network_name'])} ({f'{n['adsls_count']}' if n.get('adsls_count') is not None else '0'})",
+            text=(
+                f"{'🌟' if _is_owner_perm(n) else '🤝'} 🌐 {escape_markdown(n['network_name'])} "
+                f"({n.get('adsls_count') if n.get('adsls_count') is not None else 0})"
+            ),
             callback_data=f"move_from_network_{n['network_id']}|{escape_markdown(n['network_name'])}"
         )] for n in active_networks if _is_owner_or_full_perm(n) and n.get("adsls_count", 0) > 0
     ])
 
     await state.set_state(RegisterState.choose_old_network)
-    await call.message.edit_text("🌐 اختر الشبكة التي تريد نقل الـ ADSL منها:", reply_markup=kb)
+    await call.message.edit_text(
+        f"{_menu_header('نقل خطوط ADSL:')}\n🌐 اختر الشبكة المصدر:",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
     await call.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("move_from_network_"))
@@ -536,7 +580,13 @@ async def confirm_move_adsls(call: types.CallbackQuery, state: FSMContext):
             return
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
-            [InlineKeyboardButton(text=f"{"🌟" if _is_owner_perm(n) else "🤝"} 🌐 {escape_markdown(n['network_name'])} {f"({n['adsls_count']})" if n.get('adsls_count') is not None else "(0)"}", callback_data=f"move_to_network_{n['network_id']}|{escape_markdown(n['network_name'])}")]
+            [InlineKeyboardButton(
+                text=(
+                    f"{'🌟' if _is_owner_perm(n) else '🤝'} 🌐 {escape_markdown(n['network_name'])} "
+                    f"({n.get('adsls_count') if n.get('adsls_count') is not None else 0})"
+                ),
+                callback_data=f"move_to_network_{n['network_id']}|{escape_markdown(n['network_name'])}"
+            )]
             for n in dest_networks if _is_owner_or_full_perm(n) and n.get("network_id") != old_network_id
             ] + [[InlineKeyboardButton(text="⬅️ إلغاء", callback_data="cancel_move_adsls")]]
         )
@@ -709,12 +759,7 @@ async def register_finish(message: types.Message, state: FSMContext):
         await message.delete()
         return
 
-    prompt_message_id = data.get("adsl_prompt_message_id")
-    if prompt_message_id:
-        try:
-            await bot.delete_message(message.chat.id, prompt_message_id)
-        except Exception:
-            pass
+    await _clear_prompt_message(state, message.chat.id, "adsl_prompt_message_id")
 
     adsl_numbers = [x for x in message.text.splitlines() if x.strip()]
 
@@ -825,11 +870,29 @@ async def register_finish(message: types.Message, state: FSMContext):
 
     # Build user-facing message with fallback to avoid empty text
     failed_adsl_list = summary.get('failed_adsl', '').split(',') if summary.get('failed_adsl') else []
+    success_part = ""
+    if successful_adsl_users:
+        count_text = (
+            "خط واحد" if len(successful_adsl_users) == 1 else f"{len(successful_adsl_users)} خطوط"
+        )
+        success_part = f"✅ تم ارسال طلب تسجيل {count_text}"
+
+    fail_part = ""
+    if summary.get('failed_adsl') and successful_adsl_users:
+        failed_header = "فشل في تسجيل الخطوط التالية:\n" if failed_adsl_list else "فشل في تسجيل الخط: "
+        retry_word = "الخطوط" if len(failed_adsl_list) > 1 else "الخط"
+        contact_handle = "@mig0_0" if successful_adsl_users else ""
+        fail_part = (
+            failed_header
+            + "\n".join(failed_adsl_list)
+            + f"\n جرب اضافة {retry_word} عن طريق رقم ADSL و اسم المستخدم من قائمة خطوط النت في البوت, او تواصل مع الادارة {contact_handle}"
+        )
+
     parts = [
-        f"✅ تم ارسال طلب تسجيل {'خط واحد' if len(successful_adsl_users) == 1 else f'{len(successful_adsl_users)} خطوط'}" if successful_adsl_users else "",
-        f"{"فشل في تسجيل الخطوط التالية:\n" if len(failed_adsl_list) > 0 else "فشل في تسجيل الخط: "}" + "\n".join(failed_adsl_list) + f"\n جرب اضافة {"الخطوط" if len(failed_adsl_list) > 1 else "الخط"} عن طريق رقم ADSL و اسم المستخدم من قائمة خطوط النت في البوت, او تواصل مع الادارة {"@mig0_0" if successful_adsl_users else ""}" if summary.get('failed_adsl') and successful_adsl_users else "",
-        f"{failure_reasons_text or ''}",
-        "⏳ في انتظار موافقة الإدارة..." if successful_adsl_users else "❌ فشل في تسجيل أي حساب. يرجى التواصل مع الإدارة @mig0_0 لاضافة الخطوط التي فشلت."
+        success_part,
+        fail_part,
+        failure_reasons_text or "",
+        ("⏳ في انتظار موافقة الإدارة..." if successful_adsl_users else "❌ فشل في تسجيل أي حساب. يرجى التواصل مع الإدارة @mig0_0 لاضافة الخطوط التي فشلت."),
     ]
     msg_text = "\n".join([p for p in parts if p]) or "⏳ تم استلام طلبك، بانتظار موافقة الإدارة."
 
@@ -866,15 +929,20 @@ async def register_finish(message: types.Message, state: FSMContext):
     logger.info("Notifying admins about ADSL add request, registration_mode=%s", registration_mode)
     for admin_id in admin_targets:
         try:
+            admin_header = (
+                "طلب تسجيل مشترك جديد:\n"
+                if registration_mode
+                else ("طلب تفعيل شبكة جديدة:\n" if is_add_network_request else "طلب تفعيل خطوط إنترنت:\n")
+            )
             sent_msg = await bot.send_message(
                 admin_id,
                 (
-                    f"{"طلب تسجيل مشترك جديد:\n" if registration_mode else "طلب تفعيل شبكة جديدة:\n" if is_add_network_request else "طلب تفعيل خطوط إنترنت:\n"}"
-                    f"اسم المشترك: {username}\n"
-                    f"الشبكة: {network_name}\n"
-                    f"معرف الشبكة: {network_id}\n"
-                    f"خطوط الإنترنت:\n" + "\n".join(summary.get("success_adsl", "").split(",")) +
-                    "\n\nهل تقبل الطلب؟"
+                    admin_header
+                    + f"اسم المشترك: {username}\n"
+                    + f"الشبكة: {network_name}\n"
+                    + f"معرف الشبكة: {network_id}\n"
+                    + f"خطوط الإنترنت:\n" + "\n".join(summary.get("success_adsl", "").split(","))
+                    + "\n\nهل تقبل الطلب؟"
                 ),
                 reply_markup=kb
             )
@@ -917,12 +985,7 @@ async def register_finish_with_names(message: types.Message, state: FSMContext):
         await message.delete()
         return
 
-    prompt_message_id = data.get("adsl_prompt_message_id")
-    if prompt_message_id:
-        try:
-            await bot.delete_message(message.chat.id, prompt_message_id)
-        except Exception:
-            pass
+    await _clear_prompt_message(state, message.chat.id, "adsl_prompt_message_id")
     
     chosen_net_id = data.get("selected_network_id")
     chosen_net_name = data.get("selected_network_name")
@@ -1038,9 +1101,27 @@ async def register_finish_with_names(message: types.Message, state: FSMContext):
         logger.exception("Failed to persist pending ADSL-add-with-names request")
     # Build user-facing message with fallback to avoid empty text
     failed_adsl_list = summary.get('failed_adsl', '').split(',') if summary.get('failed_adsl') else []
+
+    successful_count = len(successful_adsl_users)
+    success_part = (
+        "✅ تم ارسال طلب تسجيل خط واحد"
+        if successful_count == 1
+        else (f"✅ تم ارسال طلب تسجيل {successful_count} خطوط" if successful_count > 1 else "")
+    )
+
+    failure_part = ""
+    if summary.get('failed_adsl') and successful_adsl_users:
+        failed_header = "فشل في تسجيل الخطوط التالية:\n" if len(failed_adsl_list) > 0 else "فشل في تسجيل الخط: "
+        failed_word = "الخطوط" if len(failed_adsl_list) > 1 else "الخط"
+        admin_hint = "@mig0_0" if successful_adsl_users else ""
+        failure_part = (
+            f"{failed_header}" + "\n".join(failed_adsl_list) +
+            f"\n جرب اضافة {failed_word} عن طريق رقم ADSL و اسم المستخدم من قائمة خطوط النت في البوت, او تواصل مع الادارة {admin_hint}"
+        )
+
     parts = [
-        f"✅ تم ارسال طلب تسجيل {'خط واحد' if len(successful_adsl_users) == 1 else f'{len(successful_adsl_users)} خطوط'}" if successful_adsl_users else "",
-        f"{"فشل في تسجيل الخطوط التالية:\n" if len(failed_adsl_list) > 0 else "فشل في تسجيل الخط: "}" + "\n".join(failed_adsl_list) + f"\n جرب اضافة {"الخطوط" if len(failed_adsl_list) > 1 else "الخط"} عن طريق رقم ADSL و اسم المستخدم من قائمة خطوط النت في البوت, او تواصل مع الادارة {"@mig0_0" if successful_adsl_users else ""}" if summary.get('failed_adsl') and successful_adsl_users else "",
+        success_part,
+        failure_part,
         f"{failure_reasons_text or ''}",
         "⏳ في انتظار موافقة الإدارة..." if successful_adsl_users else "❌ فشل في تسجيل أي حساب. يرجى التواصل مع الإدارة @mig0_0 لاضافة الخطوط التي فشلت."
     ]
@@ -1069,15 +1150,20 @@ async def register_finish_with_names(message: types.Message, state: FSMContext):
     logger.info("registration_mode=%s", registration_mode)
     for admin_id in admin_targets:
         try:
+            admin_header = (
+                "طلب تسجيل مشترك جديد:\n"
+                if registration_mode
+                else ("طلب تفعيل شبكة جديدة:\n" if is_add_network_request else "طلب تفعيل خطوط إنترنت:\n")
+            )
             sent_msg = await bot.send_message(
                 admin_id,
                 (
-                    f"{"طلب تسجيل مشترك جديد:\n" if not registration_mode else "طلب تفعيل شبكة جديدة:\n" if is_add_network_request else "طلب تفعيل خطوط إنترنت:\n"}"
-                    f"اسم المشترك: {chat_user.user_name if chat_user else data['user_name']}\n"
-                    f"الشبكة: {network_name}\n"
-                    f"معرف الشبكة: {network_id}\n"
-                    f"خطوط الإنترنت:\n" + "\n".join(summary.get("success_adsl", "").split(",")) +
-                    "\n\nهل تقبل الطلب؟"
+                    admin_header
+                    + f"اسم المشترك: {chat_user.user_name if chat_user else data['user_name']}\n"
+                    + f"الشبكة: {network_name}\n"
+                    + f"معرف الشبكة: {network_id}\n"
+                    + f"خطوط الإنترنت:\n" + "\n".join(summary.get("success_adsl", "").split(","))
+                    + "\n\nهل تقبل الطلب؟"
                 ),
                 reply_markup=kb
             )
@@ -1683,6 +1769,8 @@ async def networks_menu(message: types.Message, state: FSMContext):
     if await _block_if_active_flow(message, state):
         return
     telegram_id = str(message.chat.id)
+    if await _block_if_pending_request(message, telegram_id):
+        return
     user = await chat_user_manager.get(telegram_id)
     if not user:
         await message.answer("❌ لم يتم تسجيلك بعد.\n استخدم /start للتسجيل أولاً.")
@@ -1707,23 +1795,38 @@ async def networks_menu(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="➕ إضافة شبكة", callback_data="network_add")],
         [InlineKeyboardButton(text="⬅️ إغلاق", callback_data="close_settings")]
         ])
-        await message.answer("🌐 اضافة شبكة جديدة:", reply_markup=kb)
+        await message.answer(
+            f"{_menu_header('إضافة شبكة جديدة:')}\n🌐 اختر الإجراء:",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
         return
     
     await state.clear()
     rows = [
-        [InlineKeyboardButton(text="🔄 تغيير الشبكة النشطة", callback_data="change_active_network")],
-        [InlineKeyboardButton(text="➕ إضافة شبكة", callback_data="network_add")],
-        [InlineKeyboardButton(text="✏️ تعديل شبكة", callback_data="network_edit")],
-        [InlineKeyboardButton(text="🗑️ حذف شبكة", callback_data="network_delete")],
-        [InlineKeyboardButton(text="🤝 إدارة الشركاء", callback_data="partners")]
+        [
+            InlineKeyboardButton(text="📋 عرض شبكاتي", callback_data="my_networks"),
+            InlineKeyboardButton(text="➕ إضافة شبكة", callback_data="network_add")],
+        [
+            InlineKeyboardButton(text="🔄 تغيير الشبكة النشطة", callback_data="change_active_network"),
+        ],
+        [
+            InlineKeyboardButton(text="✏️ تعديل شبكة", callback_data="network_edit"),
+            InlineKeyboardButton(text="🗑️ حذف شبكة", callback_data="network_delete") ],
+        [
+            InlineKeyboardButton(text="🤝 إدارة الشركاء", callback_data="partners"),
+        ]
     ]
     if inactive_networks:
         rows.append([InlineKeyboardButton(text="🔓 طلب تفعيل شبكة", callback_data="enable_network_request_list")])
-    rows.append([InlineKeyboardButton(text="⬅️ إغلاق", callback_data="close_settings")])
+    rows.append([InlineKeyboardButton(text="❌ إغلاق", callback_data="close_settings")])
 
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
-    await message.answer("🌐 اختر عملية على الشبكات:", reply_markup=kb)
+    await message.answer(
+        f"{_menu_header('قائمة ادارة الشبكات:')}\n🌐 اختر العملية المطلوبة:",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
 
 @dp.callback_query(F.data == "show_networks")
 async def networks_back_callback(call: types.CallbackQuery, state: FSMContext):
@@ -1739,9 +1842,21 @@ async def networks_back_callback(call: types.CallbackQuery, state: FSMContext):
     await call.answer()
 
 
+@dp.callback_query(F.data == "my_networks")
+async def my_networks_callback(call: types.CallbackQuery, state: FSMContext):
+    if await _block_if_active_flow(call, state):
+        return
+    await _send_account_status(call.message)
+    await call.answer()
+
+
 async def _get_pending_enable_network_ids(telegram_id: str) -> set[int]:
     resp = await get_pending_requests_for_requester(telegram_id, ["network_enable"])
-    data = getattr(resp, "data", None) or resp or []
+    data = getattr(resp, "data", None)
+    if data is None:
+        data = resp
+    if not isinstance(data, (list, dict)) and hasattr(data, "data"):
+        data = getattr(data, "data", None)
     rows = [data] if isinstance(data, dict) else (data or [])
     pending_ids: set[int] = set()
     for row in rows:
@@ -1791,9 +1906,17 @@ async def enable_network_request_list(call: types.CallbackQuery, state: FSMConte
     rows.append([InlineKeyboardButton(text="⬅️ إلغاء", callback_data="close_settings")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     try:
-        await call.message.edit_text("اختر الشبكة الموقوفة لإرسال طلب تفعيل:", reply_markup=kb)
+        await call.message.edit_text(
+            f"{_menu_header('طلبات تفعيل الشبكات:')}\n🔓 اختر الشبكة الموقوفة:",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
     except Exception:
-        await call.message.answer("اختر الشبكة الموقوفة لإرسال طلب تفعيل:", reply_markup=kb)
+        await call.message.answer(
+            f"{_menu_header('طلبات تفعيل الشبكات:')}\n🔓 اختر الشبكة الموقوفة:",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
     await call.answer()
 
 
@@ -1872,6 +1995,8 @@ async def network_add_cb(call: types.CallbackQuery, state: FSMContext):
     if await _block_if_active_flow(call, state):
         return
     telegram_id = str(call.from_user.id)
+    if await _block_if_pending_request(call, telegram_id):
+        return
     user = await chat_user_manager.get(telegram_id)
 
     if not user:
@@ -1898,8 +2023,12 @@ async def network_add_cb(call: types.CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="⬅️ رجوع", callback_data="show_networks")],
         [InlineKeyboardButton(text="⬅️ إلغاء", callback_data="cancel_add_network")]
     ])
-    await call.message.edit_text("🌐 أدخل اسم الشبكة الجديدة (لا يبدأ بـ '/'):",
-                                 reply_markup=kb)
+    await call.message.edit_text(
+        f"{_menu_header('إضافة شبكة جديدة:')}\n📝 أدخل اسم الشبكة (لا يبدأ بـ '/'):",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
+    await _store_prompt_message_id(state, "network_add_prompt_message_id", call.message)
     await call.answer()
 
 @dp.callback_query(F.data == "cancel_add_network")
@@ -2053,12 +2182,16 @@ async def network_edit_cb(call: types.CallbackQuery, state: FSMContext):
         return
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"{"🌟" if _is_owner_perm(n) else "🤝"} ✏️ {n['network_name']} ({f'{n['adsls_count']}' if n.get('adsls_count') is not None else '0'})", callback_data=f"edit_network_{n['id']}")]
+            [InlineKeyboardButton(text=f"{'🌟' if _is_owner_perm(n) else '🤝'} ✏️ {n['network_name']} ({_safe_int(n.get('adsls_count'), 0)})", callback_data=f"edit_network_{n['id']}")]
             for n in networks if _is_owner_perm(n)
         ] + [[InlineKeyboardButton(text="⬅️ رجوع", callback_data="show_networks")]]
         +[[InlineKeyboardButton(text="⬅️ إغلاق", callback_data="close_settings")]]
     )
-    await call.message.edit_text("✏️ اختر الشبكة لتعديلها:", reply_markup=kb)
+    await call.message.edit_text(
+        f"{_menu_header('تعديل الشبكات:')}\n✏️ اختر الشبكة لتعديلها:",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
     await call.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("edit_network_") and not c.data.startswith("edit_network_action_"))
@@ -2094,9 +2227,17 @@ async def edit_network_selected(call: types.CallbackQuery, state: FSMContext):
     ])
 
     try:
-        await call.message.edit_text("✏️ اختر الإجراء الذي تريد تطبيقه على هذه الشبكة:", reply_markup=kb)
+        await call.message.edit_text(
+            f"{_menu_header('تعديل الشبكة:')}\n✏️ اختر الإجراء المطلوب:",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
     except Exception:
-        await call.message.answer("✏️ اختر الإجراء الذي تريد تطبيقه على هذه الشبكة:", reply_markup=kb)
+        await call.message.answer(
+            f"{_menu_header('تعديل الشبكة:')}\n✏️ اختر الإجراء المطلوب:",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
     await call.answer()
 
 
@@ -2134,8 +2275,10 @@ async def edit_network_change_name(call: types.CallbackQuery, state: FSMContext)
 
     try:
         await call.message.edit_text("📝 أرسل اسم الشبكة الجديد:", reply_markup=kb)
+        await _store_prompt_message_id(state, "edit_network_prompt_message_id", call.message)
     except Exception:
-        await call.message.answer("📝 أرسل اسم الشبكة الجديد:", reply_markup=kb)
+        sent = await call.message.answer("📝 أرسل اسم الشبكة الجديد:", reply_markup=kb)
+        await _store_prompt_message_id(state, "edit_network_prompt_message_id", sent)
     await call.answer()
 
 
@@ -2226,11 +2369,15 @@ async def network_delete_cb(call: types.CallbackQuery, state: FSMContext):
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"{"🌟" if _is_owner_perm(n) else "🤝"} 🗑️ {n['network_name']} ({f'{n['adsls_count']}' if n.get('adsls_count') is not None else '0'})", callback_data=f"delete_network_{n['network_id']}")]
+            [InlineKeyboardButton(text=f"{'🌟' if _is_owner_perm(n) else '🤝'} 🗑️ {n['network_name']} ({_safe_int(n.get('adsls_count'), 0)})", callback_data=f"delete_network_{n['network_id']}")]
             for n in active_networks if _is_owner_perm(n)
         ] + [[InlineKeyboardButton(text="⬅️ رجوع", callback_data="show_networks")]] + [[InlineKeyboardButton(text="⬅️ إغلاق", callback_data="close_settings")]]
     )
-    await call.message.edit_text("🗑️ اختر الشبكة لحذفها:", reply_markup=kb)
+    await call.message.edit_text(
+        f"{_menu_header('حذف الشبكات:')}\n🗑️ اختر الشبكة للحذف:",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
     await call.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("delete_network_"))
@@ -2314,7 +2461,7 @@ async def partners_menu_cb(call: types.CallbackQuery, state: FSMContext):
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text=f"{"🌟" if _is_owner_perm(n) else "🤝"} 🌐 {escape_markdown(n['network_name'])} ({f'{n['adsls_count']}' if n.get('adsls_count') is not None else '0'})",
+                    text=f"{'🌟' if _is_owner_perm(n) else '🤝'} 🌐 {escape_markdown(n['network_name'])} ({_safe_int(n.get('adsls_count'), 0)})",
                     callback_data=f"partners_select_{n['id']}|{escape_markdown(n['network_name'])}"
                 )
             ] for n in active_networks if _is_owner_perm(n)
@@ -2322,9 +2469,17 @@ async def partners_menu_cb(call: types.CallbackQuery, state: FSMContext):
     )
 
     try:
-        await call.message.edit_text("🌐 اختر الشبكة التي تريد إدارة الشركاء لها:", reply_markup=kb)
+        await call.message.edit_text(
+            f"{_menu_header('إدارة الشركاء:')}\n🌐 اختر الشبكة:",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
     except Exception:
-        await call.message.answer("🌐 اختر الشبكة التي تريد إدارة الشركاء لها:", reply_markup=kb)
+        await call.message.answer(
+            f"{_menu_header('إدارة الشركاء:')}\n🌐 اختر الشبكة:",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
     await call.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("partners_select_"))
@@ -2380,6 +2535,8 @@ async def adsls_menu(message: types.Message, state: FSMContext):
     if await _block_if_active_flow(message, state):
         return
     telegram_id = str(message.chat.id)
+    if await _block_if_pending_request(message, telegram_id):
+        return
     user = await chat_user_manager.get(telegram_id)
     if not user:
         await message.answer("❌ لم يتم تسجيلك بعد.\n استخدم /start للتسجيل أولاً.")
@@ -2390,6 +2547,7 @@ async def adsls_menu(message: types.Message, state: FSMContext):
     
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 عرض خطوط الشبكات", callback_data="adsls_show_networks")],
         [InlineKeyboardButton(text="➕ إضافة ADSL", callback_data="adsls_add")],
         [InlineKeyboardButton(text="🔁 نقل ADSL", callback_data="adsls_move")],
         [InlineKeyboardButton(text="📑 ترتيب ADSL في الشبكة", callback_data="order_index_networks")],
@@ -2397,7 +2555,11 @@ async def adsls_menu(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="⬅️ إغلاق", callback_data="close_settings")],
 
     ])
-    await message.answer("📡 اختر عملية على خطوط الـ ADSL:", reply_markup=kb)
+    await message.answer(
+        f"{_menu_header('قائمة إدارة خطوط ADSL:')}\n📡 اختر العملية المطلوبة:",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
 
 @dp.callback_query(F.data == "show_adsls")
 async def adsls_back_callback(call: types.CallbackQuery, state: FSMContext):
@@ -2421,11 +2583,173 @@ async def adsls_back_callback(call: types.CallbackQuery, state: FSMContext):
         pass
     await call.answer()
 
+
+@dp.callback_query(F.data == "adsls_show_networks")
+async def adsls_show_networks_callback(call: types.CallbackQuery, state: FSMContext):
+    if await _block_if_active_flow(call, state):
+        return
+    telegram_id = str(call.from_user.id)
+    user = await chat_user_manager.get(telegram_id)
+    if not user:
+        await call.answer("❌ لم يتم تسجيلك بعد.\n استخدم /start للتسجيل أولاً.", show_alert=True)
+        return
+    if not user.is_active:
+        await call.answer("❌ حسابك غير نشط. يرجى التواصل مع الإدارة.", show_alert=True)
+        return
+
+    networks = await UserManager.get_networks_for_user(user.chat_user_id)
+    if not networks:
+        await call.answer("❌ لا توجد شبكات مرتبطة بحسابك.", show_alert=True)
+        return
+
+    rows = []
+    for n in networks:
+        status_icon = "🟢" if _is_active_network(n) else "🔴"
+        owner_icon = "🌟" if _is_owner_perm(n) else "🤝"
+        net_name = escape_markdown(n.get("network_name", ""))
+        adsls_count = n.get("adsls_count")
+        count_text = f"({adsls_count})" if adsls_count is not None else "(0)"
+        net_id = n.get("network_id") or n.get("id")
+        rows.append([
+            InlineKeyboardButton(
+                text=f"{owner_icon} {status_icon} 🌐 {net_name} {count_text}",
+                callback_data=f"adsls_show_network_{net_id}",
+            )
+        ])
+
+    rows.append([InlineKeyboardButton(text="⬅️ رجوع", callback_data="show_adsls")])
+    rows.append([InlineKeyboardButton(text="⬅️ إغلاق", callback_data="close_settings")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+
+    try:
+        await call.message.edit_text(
+            f"{_menu_header('عرض خطوط الشبكات:')}\n📡 اختر الشبكة:",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+    except Exception:
+        await call.message.answer(
+            f"{_menu_header('عرض خطوط الشبكات:')}\n📡 اختر الشبكة:",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+    await call.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("adsls_show_network_"))
+async def adsls_show_network_details_callback(call: types.CallbackQuery, state: FSMContext):
+    if await _block_if_active_flow(call, state):
+        return
+    telegram_id = str(call.from_user.id)
+    user = await chat_user_manager.get(telegram_id)
+    if not user:
+        await call.answer("❌ لم يتم تسجيلك بعد.\n استخدم /start للتسجيل أولاً.", show_alert=True)
+        return
+    if not user.is_active:
+        await call.answer("❌ حسابك غير نشط. يرجى التواصل مع الإدارة.", show_alert=True)
+        return
+
+    try:
+        network_id = int(call.data.split("adsls_show_network_")[-1])
+    except Exception:
+        await call.answer("❌ خطأ في اختيار الشبكة.", show_alert=True)
+        return
+
+    network = await UserManager.get_network_by_network_id(network_id)
+    if not network:
+        await call.answer("❌ الشبكة غير موجودة.", show_alert=True)
+        return
+
+    try:
+        users = await UserManager.get_all_users_data_by_network_id(network_id)
+        if not users:
+            await call.message.edit_text(
+                f"📭 لا توجد خطوط ADSL في الشبكة {escape(network.get('network_name', ''))}.",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[[InlineKeyboardButton(text="⬅️ رجوع", callback_data="adsls_show_networks")]]
+                ),
+            )
+            await call.answer()
+            return
+
+        tasks = [UserManager.get_latest_account_data(u.get("id")) for u in users]
+        latest_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        def _rtl_wrap(text: str, bold: bool = False) -> str:
+            """Force right-to-left display even if text includes LTR parts."""
+            RLI = "\u2067"  # Right-to-Left isolate
+            PDI = "\u2069"  # Pop directional isolate
+            RLM = "\u200F"  # Right-to-left mark
+            return f"{RLM}{RLI}{text}{PDI}"
+
+        def _format_adsl_line(adsl_number: str, status: str, account_name: str) -> str:
+            safe_adsl = escape(str(adsl_number))
+            safe_status = escape(str(status))
+            safe_name = escape(str(account_name))
+            raw_line = f"🔹 <b>{safe_adsl}</b> • {safe_status} • {safe_name}"
+            return _rtl_wrap(raw_line)
+
+        def _format_block(items: list[str]) -> str:
+            if not items:
+                return "لا توجد"
+            return "\n".join(items)
+
+        frame_top = "╔═══════════⋆⋆⋆═══════════╗"
+        frame_mid = "╚═══════════⋆⋆⋆═══════════╝"
+        box_top = "╭───────────❖────────────╮"
+        box_bottom = "╰───────────❖────────────╯"
+
+        rows = []
+        for u, latest in zip(users, latest_results):
+            if isinstance(latest, Exception) or latest is None:
+                latest = {}
+            adsl_number = u.get("adsl_number") or u.get("username") or ""
+            account_status = latest.get("account_status") or latest.get("status") or u.get("status") or "غير معروف"
+            account_name = latest.get("account_name") or latest.get("p_account_name") or u.get("account_name") or "غير معروف"
+            rows.append(_format_adsl_line(adsl_number, account_status, account_name))
+
+        lines = [
+            "📡 <b>خطوط ADSL للشبكة</b>",
+            frame_top,
+            _rtl_wrap(f"🔹 الشبكة: <b>{escape(str(network.get('network_name', '')))}</b>"),
+            _rtl_wrap(f"🔹 عدد الخطوط: <b>{len(rows)}</b>"),
+            frame_mid,
+            "",
+            "🌟 <b>الخطوط</b>",
+            box_top,
+            _format_block(rows),
+            box_bottom,
+            "",
+            "💡 للعودة اختر رجوع",
+        ]
+
+        reply_text = "\n".join(lines)
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ رجوع", callback_data="adsls_show_networks")],
+                [InlineKeyboardButton(text="⬅️ إغلاق", callback_data="close_settings")],
+            ]
+        )
+
+        if len(reply_text) <= 4000:
+            await call.message.edit_text(reply_text, parse_mode="HTML", reply_markup=kb)
+        else:
+            for i in range(0, len(reply_text), 4000):
+                await call.message.answer(reply_text[i:i + 4000], parse_mode="HTML")
+            await call.message.answer("⬅️ اختر:", reply_markup=kb)
+
+        await call.answer()
+    except Exception as e:
+        logger.error(f"[adsls_show_network_details] error for network {network_id}: {e}")
+        await call.answer("⚠️ حدث خطأ أثناء عرض الخطوط.", show_alert=True)
+
 @dp.callback_query(F.data == "adsls_add")
 async def adsls_add_cb(call: types.CallbackQuery, state: FSMContext):
     if await _block_if_active_flow(call, state):
         return
     telegram_id = str(call.from_user.id)
+    if await _block_if_pending_request(call, telegram_id):
+        return
     user = await chat_user_manager.get(telegram_id)
     if not user:
         await call.answer("❌ لم يتم تسجيلك بعد.\n استخدم /start للتسجيل أولاً.", show_alert=True)
@@ -2450,11 +2774,15 @@ async def adsls_add_cb(call: types.CallbackQuery, state: FSMContext):
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"{"🌟" if _is_owner_perm(n) else "🤝"} 🌐 {n['network_name']} ({f"{n['adsls_count']}" if n.get('adsls_count') is not None else '0'})", callback_data=f"select_network_to_add_adsls_{n['id']}")]
+            [InlineKeyboardButton(text=f"{'🌟' if _is_owner_perm(n) else '🤝'} 🌐 {n['network_name']} ({_safe_int(n.get('adsls_count'), 0)})", callback_data=f"select_network_to_add_adsls_{n['id']}")]
             for n in writable_networks
         ] + [[InlineKeyboardButton(text="⬅️ رجوع", callback_data="show_adsls")]] + [[InlineKeyboardButton(text="⬅️ إلغاء", callback_data="close_settings")]]
     )
-    await call.message.edit_text("🌐 الرجاء اختيار الشبكة التي تريد إضافة المستخدمين إليها:", reply_markup=kb)
+    await call.message.edit_text(
+        f"{_menu_header('إضافة خطوط ADSL:')}\n🌐 اختر الشبكة:",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
     await call.answer()
 
 @dp.callback_query(F.data == "adsl_file")
@@ -2555,6 +2883,8 @@ async def registration_add_more_no(call: types.CallbackQuery, state: FSMContext)
 
 @dp.callback_query(F.data == "adsls_move")
 async def adsls_move_cb(call: types.CallbackQuery, state: FSMContext):
+    if await _block_if_pending_request(call, str(call.from_user.id)):
+        return
     telegram_id = str(call.from_user.id)
     user = await chat_user_manager.get(telegram_id)
     networks = await UserManager.get_networks_for_user(user.chat_user_id)
@@ -2579,7 +2909,7 @@ async def adsls_move_cb(call: types.CallbackQuery, state: FSMContext):
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"{"🌟" if _is_owner_perm(n) else "🤝"} 🌐 {n['network_name']} ({f'{n['adsls_count']}' if n.get('adsls_count') is not None else '0'})", callback_data=f"move_from_network_{n['network_id']}|{escape_markdown(n['network_name'])}")]
+            [InlineKeyboardButton(text=f"{'🌟' if _is_owner_perm(n) else '🤝'} 🌐 {n['network_name']} ({_safe_int(n.get('adsls_count'), 0)})", callback_data=f"move_from_network_{n['network_id']}|{escape_markdown(n['network_name'])}")]
             for n in networks if _is_owner_or_full_perm(n) and _safe_int(n.get("adsls_count"), 0) > 0  # Filter out read-only networks
         ] + [[InlineKeyboardButton(text="⬅️ رجوع", callback_data="show_adsls")]] + [[InlineKeyboardButton(text="⬅️ إلغاء", callback_data="cancel_move_adsls")]]
     )
@@ -2638,7 +2968,11 @@ async def toggle_delete_adsl(call: types.CallbackQuery, state: FSMContext):
     rows.append([InlineKeyboardButton(text="⬅️ إلغاء", callback_data="close_settings")])
 
     try:
-        await call.message.edit_text("✂️ اختر خطوط ADSL المراد حذفها:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        await call.message.edit_text(
+            f"{_menu_header('حذف خطوط ADSL:')}\n✂️ اختر الخطوط المراد حذفها:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+            parse_mode="HTML",
+        )
     except Exception:
         pass
 
@@ -2647,6 +2981,8 @@ async def toggle_delete_adsl(call: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "adsls_delete")
 async def adsls_delete_cb(call: types.CallbackQuery):
     telegram_id = str(call.from_user.id)
+    if await _block_if_pending_request(call, telegram_id):
+        return
     user = await chat_user_manager.get(telegram_id)
     if not user:
         await call.answer("❌ لم يتم تسجيلك بعد.\n استخدم /start للتسجيل أولاً.", show_alert=True)
@@ -2670,13 +3006,17 @@ async def adsls_delete_cb(call: types.CallbackQuery):
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(
-                    text=f"{'🌟' if _is_owner_perm(n) else '🤝'} 🌐 {n['network_name']} ({f'{n['adsls_count']}' if n.get('adsls_count') is not None else '0'})",
+                    text=f"{'🌟' if _is_owner_perm(n) else '🤝'} 🌐 {n['network_name']} ({_safe_int(n.get('adsls_count'), 0)})",
                     callback_data=f"delete_from_network_{n['id']}|{escape_markdown(n['network_name'])}"
                 )]
                 for n in writable_networks if n['adsls_count']
             ] + [[InlineKeyboardButton(text="⬅️ رجوع", callback_data="show_adsls")]] + [[InlineKeyboardButton(text="⬅️ إلغاء", callback_data="close_settings")]]
         )
-        await call.message.edit_text("🌐 اختر الشبكة التي تريد حذف الـ ADSL منها:", reply_markup=kb)
+        await call.message.edit_text(
+            f"{_menu_header('حذف خطوط ADSL:')}\n🌐 اختر الشبكة:",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
         await call.answer()
         return
 
@@ -2801,10 +3141,7 @@ def _get_network_permisssions_str(obj: Optional[SelectedNetwork]) -> str:
             return "مالك 👑"
     return "غير معروف"
 
-@dp.message(Command("account"))
-async def status_command(message: types.Message, state: FSMContext) -> None:
-    if await _block_if_active_flow(message, state):
-        return
+async def _send_account_status(message: types.Message) -> None:
     try:
         token_id = str(message.chat.id)
         chat_user = await chat_user_manager.get(token_id)
@@ -2813,14 +3150,10 @@ async def status_command(message: types.Message, state: FSMContext) -> None:
             return
         networks = await UserManager.get_networks_for_user(chat_user.chat_user_id)
         owner_networks = [n for n in networks if _is_owner_perm(n)]
-        owner_active_networks = [n for n in owner_networks if _is_active_network(n)]
-        owner_deactive_networks = [n for n in owner_networks if not _is_active_network(n)]
         partnered_networks = [n for n in networks if not _is_owner_perm(n)]
-        partnered_active_networks = [n for n in partnered_networks if _is_active_network(n)]
-        partnered_deactive_networks = [n for n in partnered_networks if not _is_active_network(n)]
         selected_network = await selected_network_manager.get(token_id)
 
-        def _rtl_wrap(text: str,bold = False) -> str:
+        def _rtl_wrap(text: str, bold: bool = False) -> str:
             """Force right-to-left display even if text includes LTR parts."""
             RLI = "\u2067"  # Right-to-Left isolate
             PDI = "\u2069"  # Pop directional isolate
@@ -2829,7 +3162,7 @@ async def status_command(message: types.Message, state: FSMContext) -> None:
 
         def _format_network_line(net) -> str:
             net_id = net.get("network_id") if isinstance(net, dict) else getattr(net, "network_id", None)
-            
+
             perm = _get_network_permisssions_str(net)
             name = (net.get("network_name") if isinstance(net, dict) else getattr(net, "network_name", "")) or ""
             bold_name = f"<b>{escape(str(name))}</b>"
@@ -2841,20 +3174,6 @@ async def status_command(message: types.Message, state: FSMContext) -> None:
             if not nets:
                 return "لا توجد"
             return "\n".join(_format_network_line(n) for n in nets)
-        
-        
-        # # Count users associated with this token
-        # resp_users = await get_all_users_by_network_id(selected_network.network_id)
-        # users_list = getattr(resp_users, "data", []) or []
-        # logger.debug(f"[status] found {len(users_list)} users for network {selected_network.network_id}")
-        # logger.debug(f"[status] users data: {users_list}")
-        # user_count = len(users_list)
-
-        # # Active users are those with status 'active' in the token's users
-        # active_count = sum(1 for u in users_list if str(u.get('status', '')) == 'حساب نشط')
-        # no_balance_count = sum(1 for u in users_list if str(u.get('status', '')) == 'بلا رصيد')
-        # inactive_count = sum(1 for u in users_list if str(u.get('status', '')) == 'فصلت الخدمة')
-        
 
         frame_top = "╔═══════════⋆⋆⋆═══════════╗"
         frame_mid = "╚═══════════⋆⋆⋆═══════════╝"
@@ -2864,7 +3183,9 @@ async def status_command(message: types.Message, state: FSMContext) -> None:
         lines = [
             "📜 <b>تقرير حسابك وشبكاتك</b>",
             frame_top,
-            _rtl_wrap(f"🔹 الشبكة النشطة: <b>{selected_network.network_name if selected_network else 'لا توجد شبكة نشطة'}</b>"),
+            _rtl_wrap(
+                f"🔹 الشبكة النشطة: <b>{selected_network.network_name if selected_network else 'لا توجد شبكة نشطة'}</b>"
+            ),
             _rtl_wrap(f"🔹 اسم المشترك: <b>{chat_user.user_name if chat_user else 'غير معروف'}</b>"),
             _rtl_wrap(f"🔹 معرف المشترك: <b>{chat_user.chat_user_id}</b>"),
             frame_mid,
@@ -2884,8 +3205,16 @@ async def status_command(message: types.Message, state: FSMContext) -> None:
 
         await message.answer("\n".join(lines), parse_mode="HTML")
     except Exception as e:
+        token_id = str(getattr(getattr(message, "chat", None), "id", "unknown"))
         logger.error(f"[status] error for token {token_id}: {e}")
         await message.answer("⚠️ لا يمكن قراءة حالة النظام حالياً.")
+
+
+@dp.message(Command("account"))
+async def status_command(message: types.Message, state: FSMContext) -> None:
+    if await _block_if_active_flow(message, state):
+        return
+    await _send_account_status(message)
 
 
 @dp.message(Command("allusers"))
@@ -3089,7 +3418,7 @@ async def reportdate_command(message: types.Message, command: Optional[CommandOb
 
     if selected_network:
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"{"🌟" if _is_owner_perm(selected_network) else "🤝"} 🌐 {selected_network.network_name if selected_network else ''}", callback_data="reportdate_scope_current")],
+            [InlineKeyboardButton(text=f"{'🌟' if _is_owner_perm(selected_network) else '🤝'} 🌐 {selected_network.network_name if selected_network else ''}", callback_data="reportdate_scope_current")],
             [InlineKeyboardButton(text="🌐 اختيار شبكة", callback_data="reportdate_scope_choose")],
             [InlineKeyboardButton(text="🌀 كل شبكاتي", callback_data="reportdate_scope_all")],
             [InlineKeyboardButton(text="❌ إلغاء", callback_data="close_settings")],
@@ -3174,7 +3503,7 @@ async def mysummary_choose_network_cb(call: types.CallbackQuery):
         return
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"{"🌟" if _is_owner_perm(n) else "🤝"} 🌐 {n['network_name']} ({f'{n['adsls_count']}' if n.get('adsls_count') is not None else '0'})", callback_data=f"mysummary_network_{n['id']}")]
+            [InlineKeyboardButton(text=f"{'🌟' if _is_owner_perm(n) else '🤝'} 🌐 {n['network_name']} ({_safe_int(n.get('adsls_count'), 0)})", callback_data=f"mysummary_network_{n['id']}")]
             for n in active_networks
         ] + [[InlineKeyboardButton(text="⬅️ رجوع", callback_data="reports")]] + [[InlineKeyboardButton(text="❌ إغلاق", callback_data="close_settings")]]
     )
@@ -3817,6 +4146,50 @@ def escape_markdown(text: str) -> str:
         text = text.replace(ch, f'\\{ch}')
     return text
 
+
+def _menu_header(title: str) -> str:
+    frame_top = "╔═══════════⋆⋆⋆═══════════╗"
+    frame_mid = "╚═══════════⋆⋆⋆═══════════╝"
+    inner_width = max(len(frame_top) - 2, 0)
+    clean_title = (title or "").strip()
+    if len(clean_title) > inner_width:
+        clean_title = clean_title[:inner_width]
+    pad_total = max(inner_width - len(clean_title), 0)
+    pad_left = pad_total // 2
+    pad_right = pad_total - pad_left
+    title_line = f"║{' ' * pad_left}<b>{clean_title}</b>{' ' * pad_right}║"
+    return "\n".join([frame_top, title_line, frame_mid])
+
+
+async def _store_prompt_message_id(state: FSMContext, key: str, message: Optional[types.Message]) -> None:
+    if not message:
+        return
+    msg_id = getattr(message, "message_id", None)
+    if msg_id is None:
+        return
+    try:
+        await state.update_data(**{key: msg_id})
+    except Exception:
+        pass
+
+
+async def _clear_prompt_message(state: FSMContext, chat_id: int, key: str) -> None:
+    try:
+        data = await state.get_data()
+    except Exception:
+        data = {}
+    msg_id = data.get(key)
+    if not msg_id:
+        return
+    try:
+        await bot.delete_message(chat_id, msg_id)
+    except Exception:
+        pass
+    try:
+        await state.update_data(**{key: None})
+    except Exception:
+        pass
+
 # Helper to delete a message after a delay
 async def _delete_message_after(message: types.Message, seconds: float = 2.0):
     try:
@@ -3834,6 +4207,8 @@ async def settings_handler(message: types.Message, state: FSMContext):
     if await _block_if_active_flow(message, state):
         return
     telegram_id = str(message.chat.id)
+    if await _block_if_pending_request(message, telegram_id):
+        return
     chat_user = await chat_user_manager.get(telegram_id)
     if not chat_user:
         await message.answer("❌ لم يتم تسجيلك بعد.\n استخدم /start للتسجيل أولاً.")
@@ -3869,13 +4244,16 @@ async def settings_handler(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="❌ إغلاق", callback_data="close_settings")]
     ])
 
-    user_name = escape_markdown(chat_user.user_name)
-    network_name = escape_markdown(network.network_name if network else "غير محددة")
+    user_name_html = escape(chat_user.user_name)
+    network_name_html = escape(network.network_name if network else "غير محددة")
     await message.answer(
-        f"المستخدم ({user_name}) | الشبكة النشطة: {network_name}\n⚙️ *إعدادات المستخدم*\nاختر العملية المطلوبة:",
+        f"{_menu_header('قائمة الإعدادات:')}\n"
+        f"👤 المستخدم: <b>{user_name_html}</b>\n"
+        f"🌐 الشبكة النشطة: <b>{network_name_html}</b>\n"
+        "⚙️ اختر العملية المطلوبة:",
         reply_markup=kb,
-        parse_mode="Markdown"
-)
+        parse_mode="HTML",
+    )
 
 
 def _order_by_options():
@@ -3904,13 +4282,17 @@ async def _render_order_by_menu(target_message: types.Message, current: str, not
     labels = _order_by_options()
     current_label = labels.get(current, labels.get("usage"))
     header = f"اختر ترتيب الخطوط في التقارير:\nالحالي: {current_label}"
-    text = f"{note}\n\n{header}" if note else header
+    text = (
+        f"{_menu_header('ترتيب الخطوط في التقارير:')}\n{note}\n\n{header}"
+        if note
+        else f"{_menu_header('ترتيب الخطوط في التقارير:')}\n{header}"
+    )
     try:
-        await target_message.edit_text(text, reply_markup=_order_by_keyboard(current))
+        await target_message.edit_text(text, reply_markup=_order_by_keyboard(current), parse_mode="HTML")
     except Exception:
         # If edit fails (e.g., message deleted), try sending a new one
         try:
-            await target_message.answer(text, reply_markup=_order_by_keyboard(current))
+            await target_message.answer(text, reply_markup=_order_by_keyboard(current), parse_mode="HTML")
         except Exception:
             pass
 
@@ -3983,7 +4365,11 @@ async def order_index_networks_cb(call: types.CallbackQuery):
     ] + [[InlineKeyboardButton(text="⬅️ رجوع", callback_data="set_order_by")],
          [InlineKeyboardButton(text="❌ إغلاق", callback_data="close_settings")]])
 
-    await call.message.edit_text("🌐 اختر الشبكة لتعديل ترتيب خطوط ADSL:", reply_markup=kb)
+    await call.message.edit_text(
+        f"{_menu_header('ترتيب خطوط ADSL:')}\n🌐 اختر الشبكة:",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
     await call.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("order_index_network_"))
@@ -4017,7 +4403,11 @@ async def order_index_pick_network(call: types.CallbackQuery, state: FSMContext)
     ]
     kb_rows += [[InlineKeyboardButton(text="⬅️ رجوع", callback_data="order_index_networks")],
                 [InlineKeyboardButton(text="❌ إغلاق", callback_data="close_settings")]]
-    await call.message.edit_text("📑 اختر ADSL لتعديل رقم ترتيبه:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+    await call.message.edit_text(
+        f"{_menu_header('ترتيب خطوط ADSL:')}\n📑 اختر ADSL لتعديل ترتيبه:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+        parse_mode="HTML",
+    )
     await call.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("order_index_select_"))
@@ -4075,7 +4465,7 @@ async def change_active_network(call: types.CallbackQuery):
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
-            text=f"{"🌟" if _is_owner_perm(n) else "🤝"} 🌐 {escape_markdown(n['network_name'])} ({f'{n['adsls_count']}' if n.get('adsls_count') is not None else '0'})",
+            text=f"{'🌟' if _is_owner_perm(n) else '🤝'} 🌐 {escape_markdown(n['network_name'])} ({_safe_int(n.get('adsls_count'), 0)})",
             callback_data=f"select_network_{n['id']}"
         )] for n in active_networks
     ] + [
@@ -4128,7 +4518,7 @@ async def select_network_callback(call: types.CallbackQuery, state: FSMContext):
 
 
 @dp.callback_query(F.data == "toggle_partner_reports")
-async def toggle_partner_reports(call: types.CallbackQuery):
+async def toggle_partner_reports(call: types.CallbackQuery, state: FSMContext):
     telegram_id = str(call.from_user.id)
     chat_user = await chat_user_manager.get(telegram_id)
     if not chat_user:
@@ -4150,11 +4540,11 @@ async def toggle_partner_reports(call: types.CallbackQuery):
         # Close current menu then show refreshed settings
         try:
             await call.message.delete()
-            await settings_handler(call.message)
+            await settings_handler(call.message, state)
         except Exception:
             try:
                 # If delete fails (e.g., message too old), attempt inline update
-                await settings_handler(call.message)
+                await settings_handler(call.message, state)
             except Exception:
                 pass
         await call.answer("✅ تم تحديث استقبال تقارير الشركاء." if new_pref else "✅ تم إيقاف استقبال تقارير الشركاء.")
@@ -4382,7 +4772,7 @@ async def catch_settings_input(message: types.Message, state: FSMContext):
             await message.reply(status + "\n\n" + _format_prefs_text(prefs_after))
         try:
             await asyncio.sleep(1)
-            await settings_handler(message)
+            await settings_handler(message, state)
         except Exception:
             pass
         return
@@ -4422,12 +4812,17 @@ async def catch_settings_input(message: types.Message, state: FSMContext):
                 kb_rows += [[InlineKeyboardButton(text="⬅️ رجوع", callback_data="order_index_networks")],
                             [InlineKeyboardButton(text="❌ إغلاق", callback_data="close_settings")]]
                 try:
-                    await message.answer("📑 قائمة ترتيب خطوط الشبكة (انقر للتعديل):", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+                    await message.answer(
+                        f"{_menu_header('ترتيب خطوط ADSL:')}\n📑 قائمة ترتيب خطوط الشبكة (انقر للتعديل):",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+                        parse_mode="HTML",
+                    )
                 except Exception:
                     pass
         return
 
     if state_name == "awaiting_network_name":
+        await _clear_prompt_message(state, message.chat.id, "edit_network_prompt_message_id")
         data = await state.get_data()
         edit_network_id = data.get("edit_network_id")
         if not edit_network_id:
@@ -4467,6 +4862,7 @@ async def catch_settings_input(message: types.Message, state: FSMContext):
         return
 
     if state_name == "awaiting_name":
+        await _clear_prompt_message(state, message.chat.id, "set_name_prompt_message_id")
         if not chat_user:
             await message.reply("❌ لم يتم تسجيلك بعد.\n استخدم /start للتسجيل أولاً.")
             user_settings_state.pop(user_id, None)
@@ -4498,13 +4894,13 @@ async def catch_settings_input(message: types.Message, state: FSMContext):
 
         try:
             await asyncio.sleep(2)
-            await settings_handler(message)
+            await settings_handler(message, state)
         except Exception:
             pass
 
 
 @dp.callback_query(F.data == "set_name")
-async def set_name_callback(call: types.CallbackQuery):
+async def set_name_callback(call: types.CallbackQuery, state: FSMContext):
     telegram_id = str(call.from_user.id)
     chat_user = await chat_user_manager.get(telegram_id)
     if not chat_user:
@@ -4521,9 +4917,11 @@ async def set_name_callback(call: types.CallbackQuery):
     ])
     try:
         await call.message.edit_text("📝 اكتب الاسم الجديد:", reply_markup=kb)
+        await _store_prompt_message_id(state, "set_name_prompt_message_id", call.message)
     except Exception:
         # Fallback to sending a new message if edit fails
-        await call.message.answer("📝 اكتب الاسم الجديد:", reply_markup=kb)
+        sent = await call.message.answer("📝 اكتب الاسم الجديد:", reply_markup=kb)
+        await _store_prompt_message_id(state, "set_name_prompt_message_id", sent)
     await call.answer()
 
 @dp.callback_query(F.data == "set_report_times")
@@ -4882,9 +5280,9 @@ async def cancel_report_times_callback(call: types.CallbackQuery):
     await call.answer("✅ تم إلغاء تعديل مواعيد التقارير")
 
 @dp.callback_query(F.data == "settings_back")
-async def settings_back_callback(call: types.CallbackQuery):
+async def settings_back_callback(call: types.CallbackQuery, state: FSMContext):
     await call.message.delete()
-    await settings_handler(call.message)
+    await settings_handler(call.message, state)
     await call.answer()
 
 @dp.callback_query(F.data == "networks_menu")

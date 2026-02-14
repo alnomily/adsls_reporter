@@ -27,20 +27,29 @@ from bot.local_postgres import (
 
 
 def _sync_count_table(tbl: str,filter_column: Optional[str] = None, filter_value: Optional[Any] = None):
-    cnt = pg_count_table(tbl, filter_column, filter_value)
+    try:
+        cnt = pg_count_table(tbl, filter_column, filter_value)
+    except pg_errors.UndefinedTable:
+        cnt = 0
     return DBResponse(data=[], count=cnt)
 
 
 def _sync_get_networks():
-    return DBResponse(data=fetch_all('SELECT * FROM networks'))
+    try:
+        rows = fetch_all('SELECT * FROM networks')
+    except pg_errors.UndefinedTable:
+        rows = []
+    return DBResponse(data=rows)
 
 
 def _sync_get_all_users():
-    return DBResponse(
-        data=fetch_all(
+    try:
+        rows = fetch_all(
             'SELECT id, username, password, network_id FROM users_accounts WHERE is_active = TRUE'
         )
-    )
+    except pg_errors.UndefinedTable:
+        rows = []
+    return DBResponse(data=rows)
 
 
 def _sync_insert_pending(network_id: str, request_text: str):

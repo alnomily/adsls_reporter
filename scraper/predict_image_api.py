@@ -1,90 +1,44 @@
-from keras.utils import register_keras_serializable
-from keras.models import load_model
-from tensorflow.python.keras.backend import ctc_batch_cost
-import tensorflow as tf
+import os
+from typing import Optional
 
-
-# --- Custom Objects ---
-@register_keras_serializable(package="Custom", name="ctc_loss")
-def ctc_loss(y_true, y_pred):
-    batch_size = tf.shape(y_true)[0]
-    input_length = tf.fill((batch_size, 1), tf.shape(y_pred)[1])
-    label_length = tf.fill((batch_size, 1), 4)
-    return ctc_batch_cost(y_true, y_pred, input_length, label_length)
-
-@register_keras_serializable(package="Custom", name="Tran")
-class TransposeLayer(tf.keras.layers.Layer):
-    def call(self, inputs):
-        return tf.transpose(inputs, perm=[0, 2, 1, 3])
-    def compute_output_shape(self, input_shape):
-        return (input_shape[0], input_shape[2], input_shape[1], input_shape[3])
+import requests
 
 
 class PredictImageAPI:
-    _image_height, _image_width = 60, 200
+    """HTTP client for the OCR model service.
 
-    def __init__(self, model_path):
-        self._int_to_char = {i: char for i,
-                             char in enumerate(sorted(list("0123456789X")))}
-        self.model = load_model(str(model_path))
+    The TensorFlow model is hosted in a separate container (ai-model).
+    """
 
-    def __decode_predictions(self, pred):
-        import numpy as np
-        input_len = tf.fill(
-            (1,), 25)
-        decoded, _ = tf.keras.backend.ctc_decode(
-            pred, input_length=input_len, greedy=True)
-        # decoded may contain -1 or values outside our mapping (CTC blank or unknown)
+    def __init__(
+        self,
+        model_path: Optional[str] = None,
+        *,
+        base_url: Optional[str] = None,
+        timeout_seconds: int = 15,
+    ):
+        self.base_url = (base_url or os.getenv("AI_MODEL_URL") or "").rstrip("/")
+        self.timeout_seconds = timeout_seconds
+
+        if not self.base_url:
+            raise RuntimeError(
+                "AI_MODEL_URL is not set. Start docker compose (ai-model service) or set AI_MODEL_URL."
+            )
+
+    def warmup(self) -> None:
         try:
-            seq = decoded[0][0, :4].numpy()
+            requests.get(f"{self.base_url}/health", timeout=self.timeout_seconds)
         except Exception:
-            # fallback: try to decode whatever is available
-            try:
-                seq = decoded[0].numpy().ravel()
-            except Exception:
-                return ""
-
-        decoded_labels = []
-        for x in seq:
-            try:
-                xi = int(x)
-            except Exception:
-                continue
-            # ignore CTC blank (-1) or any negative values
-            if xi < 0:
-                continue
-            ch = self._int_to_char.get(xi)
-            if ch is None:
-                # unknown index — skip
-                continue
-            decoded_labels.append(ch)
-
-        predicted_text = ''.join(decoded_labels)
-        return predicted_text
-
-    def __preprocess_image(self, image_path):
-        image = tf.io.read_file(str(image_path))
-        image = tf.image.decode_png(image, channels=3)
-        image = tf.image.resize(
-            image, (self._image_height, self._image_width))
-        image = tf.cast(image, tf.float32)
-
-        r, g, b = image[..., 0], image[..., 1], image[..., 2]
-
-        yellow_enhanced = (r + g) - b
-
-        yellow_enhanced = tf.image.adjust_contrast(
-            tf.expand_dims(yellow_enhanced, -1), 1.1)
-        yellow_enhanced = tf.clip_by_value(
-            yellow_enhanced, 0, 255)
-
-        return yellow_enhanced
-
-    def predict_image(self, image_path):
-        processed_image = self.__preprocess_image(image_path)
-        if processed_image is None: 
             return None
-        processed_image = tf.expand_dims(processed_image, axis=0)
-        prediction = self.model.predict(processed_image)
-        decoded_text = self.__decode_predictions(prediction)
-        return decoded_text
+
+    def predict_image(self, image_path: str) -> str:
+        with open(image_path, "rb") as f:
+            files = {"file": ("captcha.png", f, "image/png")}
+            r = requests.post(
+                f"{self.base_url}/predict",
+                files=files,
+                timeout=self.timeout_seconds,
+            )
+        r.raise_for_status()
+        data = r.json() if r.content else {}
+        return str(data.get("text") or "")
