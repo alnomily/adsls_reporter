@@ -65,7 +65,49 @@ class TableReportGenerator:
             'regular': font_manager.get_font('arabic', 20),
             'small': font_manager.get_font('arabic', 15),
             'medium': font_manager.get_font('arabic', 18),
+            # Better English digits
+            'digits': font_manager.get_font('digits', 20),
+            'digits_bold': font_manager.get_font('digits_bold', 30),
         }
+
+    def _contains_arabic(self, text: str) -> bool:
+        try:
+            s = str(text)
+            return any(
+                ('\u0600' <= ch <= '\u06FF')  # Arabic
+                or ('\u0750' <= ch <= '\u077F')  # Arabic Supplement
+                or ('\u08A0' <= ch <= '\u08FF')  # Arabic Extended-A
+                or ('\uFB50' <= ch <= '\uFDFF')  # Arabic Presentation Forms-A
+                or ('\uFE70' <= ch <= '\uFEFF')  # Arabic Presentation Forms-B
+                for ch in s
+            )
+        except Exception:
+            return False
+
+    def _should_use_digits_font(self, text: str) -> bool:
+        """Use digits font only when the full text is a numeric string (English digits).
+
+        If the text contains Arabic letters (or any other non-numeric content), keep Arabic font.
+        """
+        try:
+            s = str(text)
+        except Exception:
+            return False
+        if self._contains_arabic(s):
+            return False
+        s = s.strip()
+        if not s:
+            return False
+        # Allow common numeric formatting characters.
+        # Examples allowed: 123, 1,234, 123.45, -12, +12, 1 234
+        return re.fullmatch(r"[-+]?[0-9][0-9,\.\s]*", s) is not None
+
+    def _pick_font_for_text(self, text: str, font: ImageFont.ImageFont) -> ImageFont.ImageFont:
+        if not self._should_use_digits_font(text):
+            return font
+        size = getattr(font, 'size', None) or 20
+        is_bold = font in (self.fonts.get('bold'), self.fonts.get('table_header'), self.fonts.get('header'), self.fonts.get('title'))
+        return font_manager.get_font('digits_bold' if is_bold else 'digits', int(size))
 
     def _get_text_bbox_draw(self, draw: ImageDraw.Draw, text: str, font: ImageFont.ImageFont):
         try:
@@ -250,13 +292,14 @@ class TableReportGenerator:
                     key, is_currency = col_totals_map[i]
                     val = totals.get(key, 0.0)
                     text = self._clean_numeric(str(val), is_currency=is_currency)
-                    text_bbox = self._get_text_bbox_draw(draw, text, self.fonts['bold'])
+                    font = self._pick_font_for_text(text, self.fonts['bold'])
+                    text_bbox = self._get_text_bbox_draw(draw, text, font)
                     tb_x0, tb_y0, tb_x1, tb_y1 = text_bbox
                     text_w = tb_x1 - tb_x0
                     text_h = tb_y1 - tb_y0
                     tx = col_left + max(2, (col_width - text_w) // 2) - tb_x0
                     ty = y_pos + max(0, (header_height - text_h) // 2) - tb_y0
-                    draw.text((tx, ty), text, fill=self.colors['header_text'], font=self.fonts['bold'])
+                    draw.text((tx, ty), text, fill=self.colors['header_text'], font=font)
                 current_x = col_left
 
         return header_height, columns
@@ -468,6 +511,7 @@ class TableReportGenerator:
             col_data.append((notes_text, note_color, self.fonts['bold']))
         
         for i, (text, color, font) in enumerate(col_data):
+            font = self._pick_font_for_text(text, font)
             col_width = columns[i]["width"]
             col_left = current_x - col_width
 
@@ -608,32 +652,33 @@ class TableReportGenerator:
         left_days = self._calculate_remaining_days(network.expiration_date) if network.expiration_date else "-"
         day_count = f"الأيام المتبقية لانتهاء الاشتراك: {left_days}" if left_days not in ("-", "", None) else ""
         day_count_ar = self._process_arabic_text(day_count)
-        dc_bbox = self._get_text_bbox_draw(draw, day_count_ar, self.fonts['header'])
+        header_font = self.fonts['header']
+        dc_bbox = self._get_text_bbox_draw(draw, day_count_ar, header_font)
         dc_x0, dc_y0, dc_x1, dc_y1 = dc_bbox
         dc_h = dc_y1 - dc_y0
-        draw.text((left_x - dc_x0, top_y - dc_y0), day_count_ar, fill=self.colors['text_secondary'], font=self.fonts['header'])
+        draw.text((left_x - dc_x0, top_y - dc_y0), day_count_ar, fill=self.colors['text_secondary'], font=header_font)
 
         # Right: client info
         clints = self.client_name or network.user_name
         clint_name_ar = self._process_arabic_text(f"اسم المشترك : {clints}")
-        cn_bbox = self._get_text_bbox_draw(draw, clint_name_ar, self.fonts['header'])
+        cn_bbox = self._get_text_bbox_draw(draw, clint_name_ar, header_font)
         cn_x0, cn_y0, cn_x1, cn_y1 = cn_bbox
         cn_w = cn_x1 - cn_x0
         cn_h = cn_y1 - cn_y0
         clint_name_x = right_x - cn_w - cn_x0
         clint_name_y = top_y - cn_y0
-        draw.text((clint_name_x, clint_name_y), clint_name_ar, fill=self.colors['text_secondary'], font=self.fonts['header'])
+        draw.text((clint_name_x, clint_name_y), clint_name_ar, fill=self.colors['text_secondary'], font=header_font)
 
         clints_chat = chat_user.chat_user_id or self.client_chat_id or "----"
         clint_chat_id_ar = self._process_arabic_text(f"معرف المشترك : {clints_chat}")
-        cc_bbox = self._get_text_bbox_draw(draw, clint_chat_id_ar, self.fonts['header'])
+        cc_bbox = self._get_text_bbox_draw(draw, clint_chat_id_ar, header_font)
         cc_x0, cc_y0, cc_x1, cc_y1 = cc_bbox
         cc_w = cc_x1 - cc_x0
         cc_h = cc_y1 - cc_y0
         spacing = 6
         chat_x = right_x - cc_w - cc_x0
         chat_y = (clint_name_y + cn_h + spacing) - cc_y0
-        draw.text((chat_x, chat_y), clint_chat_id_ar, fill=self.colors['text_secondary'], font=self.fonts['header'])
+        draw.text((chat_x, chat_y), clint_chat_id_ar, fill=self.colors['text_secondary'], font=header_font)
 
         # Center: title + subtitle
         title_ar = self._process_arabic_text("تقرير خطوط النت لشبكة {}".format(network.network_name))
@@ -657,13 +702,13 @@ class TableReportGenerator:
         # Timestamp (right aligned, under subtitle)
         timestamp = datetime.now().strftime("%Y/%m/%d   الساعة : %H:%M:%S") if not report_date else report_date
         timestamp_ar = self._process_arabic_text(f"تاريخ التقرير: {timestamp}")
-        ts_bbox = self._get_text_bbox_draw(draw, timestamp_ar, self.fonts['header'])
+        timestamp_y = subtitle_y + s_h + 10
+        ts_bbox = self._get_text_bbox_draw(draw, timestamp_ar, header_font)
         ts_x0, ts_y0, ts_x1, ts_y1 = ts_bbox
         ts_w = ts_x1 - ts_x0
         ts_h = ts_y1 - ts_y0
         timestamp_x = right_x - ts_w - ts_x0
-        timestamp_y = subtitle_y + s_h + 10
-        draw.text((timestamp_x, timestamp_y - ts_y0), timestamp_ar, fill=self.colors['text_secondary'], font=self.fonts['header'])
+        draw.text((timestamp_x, timestamp_y - ts_y0), timestamp_ar, fill=self.colors['text_secondary'], font=header_font)
 
         bottom = max(
             timestamp_y + ts_h,

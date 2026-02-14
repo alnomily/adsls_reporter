@@ -13,6 +13,7 @@ services:
       # Service DNS names only work inside the compose network
       AI_MODEL_URL: http://ai-model:8000
       LOCAL_PG_HOST: postgres
+      TZ: Asia/Aden
     depends_on:
       postgres:
         condition: service_healthy
@@ -27,6 +28,8 @@ services:
       dockerfile: ai_model/Dockerfile
     ports:
       - "8000:8000"
+    environment:
+      TZ: Asia/Aden
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()\" "]
       interval: 10s
@@ -42,6 +45,7 @@ services:
       POSTGRES_DB: ${LOCAL_PG_DB:-yemen_net_postgres}
       POSTGRES_USER: ${LOCAL_PG_USER:-postgres}
       POSTGRES_PASSWORD: ${LOCAL_PG_PASSWORD:-alnomily_2024}
+      TZ: Asia/Aden
     volumes:
       - pg_data:/var/lib/postgresql
     healthcheck:
