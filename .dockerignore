@@ -3,6 +3,15 @@ __pycache__/
 *.pyo
 *.pyd
 *.log
+.tar
+.tar.gz
+.tgz
+.zip
+.7z
+*.dump
+*.sql
+*.bak
+.compose.env
 .env
 .venv/
 venv/
@@ -12,3 +21,4 @@ venv/
 reports/
 fonts/
 supabase_export_*/
+yemen-net-images.tar

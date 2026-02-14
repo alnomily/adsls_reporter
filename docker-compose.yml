@@ -1,5 +1,6 @@
 services:
   yemen-net-bot:
+    image: "${DOCKERHUB_USERNAME:-local}/${DOCKERHUB_REPO:-yemen-net-bot}:${IMAGE_TAG:-latest}"
     build: .
     volumes:
       - ./fonts:/app/fonts:ro
@@ -20,6 +21,7 @@ services:
     restart: unless-stopped
 
   ai-model:
+    image: "${DOCKERHUB_USERNAME:-local}/${DOCKERHUB_REPO:-yemen-net-bot}-ai-model:${IMAGE_TAG:-latest}"
     build:
       context: .
       dockerfile: ai_model/Dockerfile
@@ -35,14 +37,12 @@ services:
   postgres:
     image: postgres:18
     ports:
-      # Map container 5432 to a different host port to avoid clashing with local Postgres.
       - "${DOCKER_PG_PORT:-5433}:5432"
     environment:
       POSTGRES_DB: ${LOCAL_PG_DB:-yemen_net_postgres}
       POSTGRES_USER: ${LOCAL_PG_USER:-postgres}
       POSTGRES_PASSWORD: ${LOCAL_PG_PASSWORD:-alnomily_2024}
     volumes:
-      # Postgres 18+ expects a single mount at /var/lib/postgresql
       - pg_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${LOCAL_PG_USER:-postgres} -d ${LOCAL_PG_DB:-yemen_net_postgres}"]
